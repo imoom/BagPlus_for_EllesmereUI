@@ -1,0 +1,12 @@
+## Interface: 120000, 120001, 120005, 120007, 120100
+## Title: BagPlus for EllesmereUI
+## Category: Inventory
+## Notes: Extra EllesmereUI bag categories and item-level gear sorting.
+## Author: Shamongus
+## Version: 0.1.0
+## X-License: MIT
+## Dependencies: EllesmereUI, EllesmereUIBags
+## SavedVariables: BagPlusForEllesmereUIDB
+## IconTexture: Interface\Icons\INV_Misc_Bag_08
+
+BagPlus_for_EllesmereUI.lua
