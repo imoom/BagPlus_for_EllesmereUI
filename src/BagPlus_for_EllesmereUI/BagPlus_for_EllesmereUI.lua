@@ -11,6 +11,13 @@ local KEY_BOE = "BoE Gear"
 local RULE_WUE = "warboundUntilEquip"
 local RULE_BOE = "bindOnEquip"
 
+local ILVL_SORT_VALUES = {
+    desc = "Highest First",
+    asc = "Lowest First",
+    off = "Off",
+}
+local ILVL_SORT_ORDER = { "desc", "asc", "off" }
+
 local CATEGORY_DEFS = {
     { key = KEY_WUE, name = "Warbound Gear", rule = RULE_WUE, icon = 4871338 },
     { key = KEY_BOE, name = "BoE Gear", rule = RULE_BOE, icon = 4382688 },
@@ -623,14 +630,19 @@ local function RegisterOptions()
                 "Adds a BoE Gear category for unbound Bind-on-Equip armor and weapons."
             ); y = y - h
 
-            _, h = W:Toggle(parent, "Sort Gear by Item Level", y,
-                function() return SortEnabled() end,
+            _, h = W:Dropdown(parent, "Gear Sort", y,
+                ILVL_SORT_VALUES,
+                function() return SortMode() end,
                 function(v)
-                    DB().ilvlSort = v and "desc" or "off"
-                    DB().sortGearByItemLevel = v and true or false
+                    local mode = (v == "asc" or v == "off") and v or "desc"
+                    local db = DB()
+                    if db.ilvlSort == mode then return end
+                    db.ilvlSort = mode
+                    db.sortGearByItemLevel = mode ~= "off"
                     RebuildBagPlus()
                 end,
-                "Sorts armor and weapons by item level within gear categories."
+                ILVL_SORT_ORDER,
+                "Choose whether armor and weapons sort by highest item level first, lowest first, or use EllesmereUI's normal gear order."
             ); y = y - h
 
             _, h = W:Button(parent, "Refresh BagPlus", y, function()

@@ -1,35 +1,28 @@
-# BagPlus for EllesmereUI
+# BagPlus for EllesmereUI Repository
 
-BagPlus for EllesmereUI is a small extension addon for EllesmereUI Bags.
+This root README is for maintaining the repo. The packaged user-facing addon README lives at `src/BagPlus_for_EllesmereUI/README.md`.
 
-This is intended as a temporary solution until BoE, Warbound-until-Equipped, and item-level gear sorting support is added to the ordinary EllesmereUI Bags addon.
+## Layout
 
-## Dependencies
+Runtime addon files live in `src/BagPlus_for_EllesmereUI/`. This keeps the installable addon folder separate from repo tooling, release artifacts, and the EllesmereUI compatibility submodule.
 
-Keep these addons enabled:
+## Release
 
-- EllesmereUI
-- EllesmereUI Bags
-- BagPlus for EllesmereUI
+The addon version in `src/BagPlus_for_EllesmereUI/BagPlus_for_EllesmereUI.toc` is the source of truth. Release archives are written to `releases/<version>/BagPlus_for_EllesmereUI.zip`, and the `releases/` folder is ignored by Git.
 
-BagPlus does not replace EllesmereUI Bags. It extends the existing bag category system at runtime.
-
-## Commands
+Normal release flow:
 
 ```text
-/bagplus boe on
-/bagplus boe off
-/bagplus wue on
-/bagplus wue off
-/bagplus ilvl asc
-/bagplus ilvl desc
-/bagplus ilvl off
-/bagplus status
-/bagplus refresh
+# Update src/BagPlus_for_EllesmereUI/BagPlus_for_EllesmereUI.toc and changelog.md first, then commit.
+scripts/release.sh --tag
 ```
 
-## Defaults
+The release script expects the current commit to be tagged `v<version>` where `<version>` matches the `.toc` version. Passing `--tag` creates that annotated tag if it is missing. If the tag already exists on the remote, run `scripts/release.sh --fetch-tags` after pulling/fetching so the local tag can be validated.
 
-- BoE Gear category: on
-- Warbound Gear category: on
-- Item-level sorting: descending
+For a local test archive before committing, run:
+
+```text
+scripts/release.sh --allow-dirty --no-tag-check --force
+```
+
+The zip contains only the addon folder and release package files: `.toc`, `.lua`, the source README, `LICENSE`, and `changelog.md`.

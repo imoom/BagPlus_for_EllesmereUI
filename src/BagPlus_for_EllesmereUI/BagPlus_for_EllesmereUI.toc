@@ -3,7 +3,7 @@
 ## Category: Inventory
 ## Notes: Extra EllesmereUI bag categories and item-level gear sorting.
 ## Author: Shamongus
-## Version: 0.1.0
+## Version: 26.2
 ## X-License: MIT
 ## Dependencies: EllesmereUI, EllesmereUIBags
 ## SavedVariables: BagPlusForEllesmereUIDB
