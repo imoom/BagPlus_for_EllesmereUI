@@ -1,0 +1,3 @@
+[submodule "EllesmereUI"]
+	path = EllesmereUI
+	url = https://github.com/EllesmereGaming/EllesmereUI.git
