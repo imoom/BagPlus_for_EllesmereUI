@@ -2,6 +2,13 @@
 
 All notable changes to BagPlus for EllesmereUI will be documented in this file.
 
+## 26.3 - 2026-08-23
+
+- Added an opt-in Compact Category Rows setting and `/bagplus compact on|off` command for packing short All Items category sections left-to-right.
+- Added a BagPlus-only Hide Empty Recent Items option and `/bagplus emptyrecent on|off` command that temporarily hides EllesmereUI's Recent Items quickview only while it has no items.
+- Tightened compact category sizing to title width and hides compact-only header separator artifacts.
+- Adjusted EllesmereUI's Auto-Size to Fit height after compacting so the bag frame follows the compacted All Items layout.
+
 ## 26.2 - 2026-08-22
 
 - Changed the BagPlus gear sort option in EllesmereUI from an on/off switch to a dropdown so all three sort modes are selectable.

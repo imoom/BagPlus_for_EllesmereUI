@@ -24,6 +24,10 @@ BagPlus does not replace EllesmereUI Bags. It extends the existing bag category 
 /bagplus ilvl asc
 /bagplus ilvl desc
 /bagplus ilvl off
+/bagplus compact on
+/bagplus compact off
+/bagplus emptyrecent on
+/bagplus emptyrecent off
 /bagplus status
 /bagplus refresh
 ```
@@ -33,3 +37,5 @@ BagPlus does not replace EllesmereUI Bags. It extends the existing bag category 
 - BoE Gear category: on
 - Warbound Gear category: on
 - Item-level sorting: descending
+- Compact category rows: off
+- Hide empty Recent Items: on
