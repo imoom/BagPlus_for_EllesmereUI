@@ -23,6 +23,18 @@ local CATEGORY_DEFS = {
     { key = KEY_BOE, name = "BoE Gear", rule = RULE_BOE, icon = 4382688 },
 }
 
+local MAX_ITEMS_PER_ROW_MIN = 5
+local MAX_ITEMS_PER_ROW_MAX = 20
+local MAX_ITEMS_PER_ROW_DEFAULT = 12
+
+local function NormalizeMaxItemsPerRow(value)
+    local n = tonumber(value) or MAX_ITEMS_PER_ROW_DEFAULT
+    n = math.floor(n + 0.5)
+    if n < MAX_ITEMS_PER_ROW_MIN then n = MAX_ITEMS_PER_ROW_MIN end
+    if n > MAX_ITEMS_PER_ROW_MAX then n = MAX_ITEMS_PER_ROW_MAX end
+    return n
+end
+
 local patched
 local refreshPatched
 local refreshingOrder
@@ -49,6 +61,11 @@ local function DB()
     if BagPlusForEllesmereUIDB.hideEmptyRecentItems == nil then
         BagPlusForEllesmereUIDB.hideEmptyRecentItems = true
     end
+    if BagPlusForEllesmereUIDB.limitItemsPerRow == nil then
+        BagPlusForEllesmereUIDB.limitItemsPerRow = false
+    end
+    BagPlusForEllesmereUIDB.maxItemsPerRow = NormalizeMaxItemsPerRow(BagPlusForEllesmereUIDB.maxItemsPerRow)
+    BagPlusForEllesmereUIDB.maxBagColumns = nil
     return BagPlusForEllesmereUIDB
 end
 
@@ -78,6 +95,30 @@ end
 
 local function HideEmptyRecentItemsEnabled()
     return DB().hideEmptyRecentItems == true
+end
+
+local function LimitItemsPerRowEnabled()
+    return DB().limitItemsPerRow == true
+end
+
+local function MaxItemsPerRow()
+    return NormalizeMaxItemsPerRow(DB().maxItemsPerRow)
+end
+
+local function ItemsPerRowLimit()
+    if not LimitItemsPerRowEnabled() then return nil end
+    return MaxItemsPerRow()
+end
+
+local function ApplyItemsPerRowLimit(columns)
+    columns = math.floor(tonumber(columns) or MAX_ITEMS_PER_ROW_DEFAULT)
+    if columns < 1 then columns = MAX_ITEMS_PER_ROW_DEFAULT end
+
+    local limit = ItemsPerRowLimit()
+    if limit and columns > limit then
+        return limit
+    end
+    return columns
 end
 
 local function BagsProfile()
@@ -486,6 +527,7 @@ local BAG_SECTION_GAP = 6
 local BAG_GRID_START_X = 15
 local BAG_COMPACT_MIN_COLUMNS = 2
 local BAG_COMPACT_MAX_ROWS = 2
+local BAG_COMPACT_BUCKET_GAP = math.max(8, BAG_SLOT_SPACING * 3)
 local BAG_HEADER_H = 35
 local BAG_FOOTER_H = 28
 local BAG_POST_LAYOUT_AUTOSIZE_MIN_H = 260
@@ -540,6 +582,14 @@ local function FrameHeight(frame, fallback)
     if frame and frame.GetHeight then
         local height = frame:GetHeight()
         if type(height) == "number" and height > 0 then return height end
+    end
+    return fallback
+end
+
+local function FrameWidth(frame, fallback)
+    if frame and frame.GetWidth then
+        local width = frame:GetWidth()
+        if type(width) == "number" and width > 0 then return width end
     end
     return fallback
 end
@@ -658,6 +708,15 @@ local function HideSection(section)
     end
 end
 
+local function SortFramesByGridPosition(frames)
+    table.sort(frames, function(a, b)
+        local ax, ay = FrameTopLeft(a)
+        local bx, by = FrameTopLeft(b)
+        if ay ~= by then return (ay or 0) > (by or 0) end
+        return (ax or 0) < (bx or 0)
+    end)
+end
+
 local function CollectRenderedSections(child)
     if not (child and child.GetChildren) then return nil end
 
@@ -730,12 +789,9 @@ local function CollectRenderedSections(child)
                 end
             end
 
-            table.sort(section.slots, function(a, b)
-                local ax, ay = FrameTopLeft(a)
-                local bx, by = FrameTopLeft(b)
-                if ay ~= by then return (ay or 0) > (by or 0) end
-                return (ax or 0) < (bx or 0)
-            end)
+            SortFramesByGridPosition(section.slots)
+            SortFramesByGridPosition(section.pads)
+            SortFramesByGridPosition(section.subheaders)
             sections[#sections + 1] = section
         end
     end
@@ -772,6 +828,313 @@ local function ApplyPostLayoutAutoSize(contentH)
 
     EUI_Bags._asMaxH = targetH
     EUI_Bags:SetHeight(targetH)
+end
+
+local function ApplyPostLayoutWidth(renderedColumns, layoutColumns, stride)
+    if not (_G.EUI_Bags and EUI_Bags.SetWidth and EUI_Bags._scrollChild) then return end
+    renderedColumns = math.floor(tonumber(renderedColumns) or 0)
+    layoutColumns = math.floor(tonumber(layoutColumns) or 0)
+    if renderedColumns < 1 or layoutColumns < 1 or layoutColumns >= renderedColumns then return end
+
+    stride = stride or (BAG_SLOT_SIZE + BAG_SLOT_SPACING)
+    local child = EUI_Bags._scrollChild
+    local renderedGridW = renderedColumns * stride
+    local oldChildW = FrameWidth(child, renderedGridW)
+    local extraW = oldChildW - renderedGridW
+    if type(extraW) ~= "number" or extraW < 0 then extraW = 0 end
+
+    local newChildW = layoutColumns * stride + extraW
+    local deltaW = newChildW - oldChildW
+    if child.SetWidth then child:SetWidth(newChildW) end
+
+    if EUI_Bags._asMaxGridW then EUI_Bags._asMaxGridW = newChildW end
+
+    local oldFrameW = FrameWidth(EUI_Bags, newChildW)
+    local newFrameW = oldFrameW + deltaW
+    if newFrameW > 0 then EUI_Bags:SetWidth(newFrameW) end
+end
+
+local function WantedPadCount(slotCount, padCount, columns, keepPads)
+    if keepPads == false or padCount <= 0 then return 0 end
+    if slotCount == 0 then return math.min(columns, padCount) end
+    local remainder = slotCount % columns
+    if remainder == 0 then return 0 end
+    return math.min(columns - remainder, padCount)
+end
+
+local function ReflowSlotBlock(slots, pads, child, startX, topY, columns, stride, keepPads)
+    for index, slot in ipairs(slots) do
+        local col = (index - 1) % columns
+        local row = math.floor((index - 1) / columns)
+        SetFrameTopLeft(slot, child, startX + col * stride, topY - row * stride)
+    end
+
+    local padCount = WantedPadCount(#slots, #pads, columns, keepPads)
+    for index, pad in ipairs(pads) do
+        if index <= padCount then
+            local totalIndex = #slots + index
+            local col = (totalIndex - 1) % columns
+            local row = math.floor((totalIndex - 1) / columns)
+            SetFrameTopLeft(pad, child, startX + col * stride, topY - row * stride)
+            if pad.Show then pad:Show() end
+        elseif pad.Hide then
+            pad:Hide()
+        end
+    end
+
+    local rows = 0
+    if #slots > 0 then
+        rows = math.ceil(#slots / columns)
+    elseif padCount > 0 then
+        rows = 1
+    end
+    return topY - rows * stride
+end
+
+local function FilterFramesInBand(frames, topY, bottomY)
+    local result = {}
+    for _, frame in ipairs(frames) do
+        local _, y = FrameTopLeft(frame)
+        if type(y) == "number" and y < topY and y > bottomY then
+            result[#result + 1] = frame
+        end
+    end
+    SortFramesByGridPosition(result)
+    return result
+end
+
+local function FilterFramesInBox(frames, leftX, rightX, topY, bottomY)
+    local result = {}
+    for _, frame in ipairs(frames) do
+        local x, y = FrameTopLeft(frame)
+        if type(x) == "number" and type(y) == "number"
+           and x >= leftX - 1 and x < rightX + 1
+           and y < topY and y > bottomY then
+            result[#result + 1] = frame
+        end
+    end
+    SortFramesByGridPosition(result)
+    return result
+end
+
+local function SectionHasSharedSubheaderRows(section)
+    local subheaders = section and section.subheaders
+    if not subheaders or #subheaders < 2 then return false end
+
+    for i = 2, #subheaders do
+        local _, prevY = FrameTopLeft(subheaders[i - 1])
+        local _, y = FrameTopLeft(subheaders[i])
+        if type(prevY) == "number" and type(y) == "number" and math.abs(prevY - y) <= 1 then
+            return true
+        end
+    end
+    return false
+end
+
+local function CanReflowSection(section)
+    return not SectionHasSharedSubheaderRows(section)
+end
+
+local function NextLowerSubheaderY(subheaders, index, fallbackY)
+    local _, y = FrameTopLeft(subheaders[index])
+    if type(y) ~= "number" then return fallbackY end
+    for nextIndex = index + 1, #subheaders do
+        local _, nextY = FrameTopLeft(subheaders[nextIndex])
+        if type(nextY) == "number" and nextY < y - 1 then
+            return nextY
+        end
+    end
+    return fallbackY
+end
+
+local function HeaderLabelWidth(header)
+    local label = header and header._label
+    if label and label.GetStringWidth then
+        return label:GetStringWidth() or 0
+    end
+    return 0
+end
+
+local function BuildSharedSubheaderBuckets(section, stride)
+    local buckets = {}
+    for index, subheader in ipairs(section.subheaders) do
+        local x, y = FrameTopLeft(subheader)
+        if type(x) == "number" and type(y) == "number" then
+            local width = FrameWidth(subheader, stride)
+            local bottomY = NextLowerSubheaderY(section.subheaders, index, section.nextY)
+            buckets[#buckets + 1] = {
+                subheader = subheader,
+                slots = FilterFramesInBox(section.slots, x, x + width + BAG_SLOT_SPACING, y, bottomY),
+            }
+        end
+    end
+    return buckets
+end
+
+local function SharedBucketSpan(bucket, columns, stride)
+    local slotCount = #bucket.slots
+    local itemSpan = math.max(1, math.min(columns, slotCount))
+    local labelSpan = math.ceil((HeaderLabelWidth(bucket.subheader) + 8) / stride)
+    local span = math.max(1, itemSpan, labelSpan)
+    if span > columns then span = columns end
+    return span
+end
+
+local function ReflowSharedSubheaderSection(section, child, startX, topY, columns, stride, keepPads)
+    local width = columns * stride
+    SetFrameTopLeft(section.header, child, startX, topY)
+    section.header:SetWidth(width)
+    SetCompactHeader(section.header, false)
+
+    local buckets = BuildSharedSubheaderBuckets(section, stride)
+    for _, pad in ipairs(section.pads) do
+        if pad.Hide then pad:Hide() end
+    end
+
+    local nextPadIndex = 1
+    local function PlacePad(x, y)
+        if keepPads == false then return false end
+        local pad = section.pads[nextPadIndex]
+        if not pad then return false end
+        nextPadIndex = nextPadIndex + 1
+        SetFrameTopLeft(pad, child, x, y)
+        if pad.Show then pad:Show() end
+        return true
+    end
+
+    local function FillRowPads(rowTop, usedWidth)
+        if keepPads == false then return end
+        local padTop = rowTop - BAG_SUBHEADER_H
+        local padCount = math.floor(math.max(0, width - usedWidth) / stride)
+        for index = 1, padCount do
+            PlacePad(startX + usedWidth + (index - 1) * stride, padTop)
+        end
+    end
+
+    local function FillLastItemRowPads(rowTop, usedColumns, span, rows)
+        if keepPads == false or rows <= 0 or usedColumns <= 0 or usedColumns >= span then return end
+        local padTop = rowTop - BAG_SUBHEADER_H - (rows - 1) * stride
+        for index = usedColumns + 1, span do
+            PlacePad(startX + (index - 1) * stride, padTop)
+        end
+    end
+
+    local rowTop = topY - BAG_SECTION_HEADER_H
+    local usedWidth = 0
+    local rowItemRows = 0
+
+    local function FlushRow()
+        if usedWidth == 0 then return end
+        FillRowPads(rowTop, usedWidth)
+        rowTop = rowTop - BAG_SUBHEADER_H - rowItemRows * stride
+        usedWidth = 0
+        rowItemRows = 0
+    end
+
+    for _, bucket in ipairs(buckets) do
+        local slotCount = #bucket.slots
+        local span = SharedBucketSpan(bucket, columns, stride)
+        local rows = slotCount > 0 and math.ceil(slotCount / span) or 0
+        local bucketWidth = span * stride
+        local startOffset = usedWidth > 0 and usedWidth + BAG_COMPACT_BUCKET_GAP or 0
+        local needsOwnRow = rows > 1
+
+        if usedWidth > 0 and (needsOwnRow or startOffset + bucketWidth > width + 0.5) then
+            FlushRow()
+            startOffset = 0
+        end
+
+        local bucketX = startX + startOffset
+        SetFrameTopLeft(bucket.subheader, child, bucketX, rowTop)
+        bucket.subheader:SetWidth(bucketWidth)
+        if bucket.subheader.Show then bucket.subheader:Show() end
+
+        for index, slot in ipairs(bucket.slots) do
+            local col = (index - 1) % span
+            local row = math.floor((index - 1) / span)
+            SetFrameTopLeft(slot, child, bucketX + col * stride, rowTop - BAG_SUBHEADER_H - row * stride)
+        end
+
+        if needsOwnRow then
+            local remainder = slotCount % span
+            FillLastItemRowPads(rowTop, remainder, span, rows)
+            rowTop = rowTop - BAG_SUBHEADER_H - rows * stride
+            usedWidth = 0
+            rowItemRows = 0
+        else
+            usedWidth = startOffset + bucketWidth
+            rowItemRows = math.max(rowItemRows, rows)
+        end
+    end
+    FlushRow()
+
+    for index = nextPadIndex, #section.pads do
+        local pad = section.pads[index]
+        if pad and pad.Hide then pad:Hide() end
+    end
+
+    return rowTop - BAG_SECTION_GAP
+end
+
+local function ReflowSection(section, child, startX, topY, columns, stride, keepPads)
+    local width = columns * stride
+    SetFrameTopLeft(section.header, child, startX, topY)
+    section.header:SetWidth(width)
+    SetCompactHeader(section.header, false)
+
+    local nextTop = topY - BAG_SECTION_HEADER_H
+    if #section.subheaders == 0 then
+        nextTop = ReflowSlotBlock(section.slots, section.pads, child, startX, nextTop, columns, stride, keepPads)
+        return nextTop - BAG_SECTION_GAP
+    end
+
+    local _, firstSubY = FrameTopLeft(section.subheaders[1])
+    if type(firstSubY) == "number" then
+        local leadingSlots = FilterFramesInBand(section.slots, section.y, firstSubY)
+        local leadingPads = FilterFramesInBand(section.pads, section.y, firstSubY)
+        if #leadingSlots > 0 or #leadingPads > 0 then
+            nextTop = ReflowSlotBlock(leadingSlots, leadingPads, child, startX, nextTop, columns, stride, keepPads)
+        end
+    end
+
+    local blocks = {}
+    for index, subheader in ipairs(section.subheaders) do
+        local _, subY = FrameTopLeft(subheader)
+        local _, nextSubY = FrameTopLeft(section.subheaders[index + 1])
+        blocks[#blocks + 1] = {
+            subheader = subheader,
+            topY = subY or section.y,
+            bottomY = nextSubY or section.nextY,
+        }
+    end
+
+    for _, block in ipairs(blocks) do
+        SetFrameTopLeft(block.subheader, child, startX, nextTop)
+        block.subheader:SetWidth(width)
+        if block.subheader.Show then block.subheader:Show() end
+        nextTop = nextTop - BAG_SUBHEADER_H
+        nextTop = ReflowSlotBlock(
+            FilterFramesInBand(section.slots, block.topY, block.bottomY),
+            FilterFramesInBand(section.pads, block.topY, block.bottomY),
+            child, startX, nextTop, columns, stride, keepPads
+        )
+    end
+
+    return nextTop - BAG_SECTION_GAP
+end
+
+local function PreserveSectionLayout(section, child, startX, topY, stride, keepPads)
+    SetCompactHeader(section.header, false)
+    local height = keepPads and section.height or SectionContentHeight(section, stride)
+    local dx = startX - section.x
+    local dy = topY - section.y
+    for _, frame in ipairs(section.frames) do
+        OffsetFrame(frame, dx, dy)
+        if IsEmptyPad(frame) then
+            frame:SetShown(keepPads == true)
+        end
+    end
+    return topY - height
 end
 
 local function UpdateBagScrollRange()
@@ -832,14 +1195,50 @@ local function ApplyHideEmptyRecentItems()
     UpdateBagScrollRange()
 end
 
+local function ApplyMaxItemsPerRow()
+    if not LimitItemsPerRowEnabled() then return end
+    if not (_G.EUI_Bags and EUI_Bags:IsVisible()) then return end
+
+    local child = EUI_Bags._scrollChild
+    local sections, headers, renderedColumns, stride, startX = CollectRenderedSections(child)
+    if not sections then return end
+
+    local columns = ApplyItemsPerRowLimit(renderedColumns)
+    if columns >= renderedColumns then return end
+
+    local curY = headers[1].y or -6
+    local canResizeWidth = true
+    for _, section in ipairs(sections) do
+        if SectionHasSharedSubheaderRows(section) then
+            curY = ReflowSharedSubheaderSection(section, child, startX, curY, columns, stride, true)
+        elseif CanReflowSection(section) then
+            curY = ReflowSection(section, child, startX, curY, columns, stride, true)
+        else
+            canResizeWidth = false
+            curY = PreserveSectionLayout(section, child, startX, curY, stride, true)
+        end
+    end
+
+    local contentH = math.abs(curY) + 10
+    child:SetHeight(contentH)
+    if canResizeWidth then
+        ApplyPostLayoutWidth(renderedColumns, columns, stride)
+    end
+    ApplyPostLayoutAutoSize(contentH)
+    UpdateBagScrollRange()
+end
+
 local function ApplyCompactCategoryRows()
     if not CompactCategoryRowsEnabled() then return end
     if not (_G.EUI_Bags and EUI_Bags:IsVisible() and SelectedAllItemsView()) then return end
 
     local child = EUI_Bags._scrollChild
-    local sections, headers, columns, stride, startX = CollectRenderedSections(child)
+    local sections, headers, renderedColumns, stride, startX = CollectRenderedSections(child)
     if not sections then return end
 
+    local columns = ApplyItemsPerRowLimit(renderedColumns)
+    local shouldShrinkWidth = columns < renderedColumns
+    local canResizeWidth = true
     local curY = headers[1].y or -6
     local rowUsed = 0
     local rowHeight = 0
@@ -855,17 +1254,14 @@ local function ApplyCompactCategoryRows()
 
     local function PreserveFullWidthSection(section, keepPads)
         FlushCompactRow()
-        SetCompactHeader(section.header, false)
-        local height = keepPads and section.height or SectionContentHeight(section, stride)
-        local dx = startX - section.x
-        local dy = curY - section.y
-        for _, frame in ipairs(section.frames) do
-            OffsetFrame(frame, dx, dy)
-            if IsEmptyPad(frame) then
-                frame:SetShown(keepPads == true)
-            end
+        if shouldShrinkWidth and SectionHasSharedSubheaderRows(section) then
+            curY = ReflowSharedSubheaderSection(section, child, startX, curY, columns, stride, keepPads)
+        elseif shouldShrinkWidth and CanReflowSection(section) then
+            curY = ReflowSection(section, child, startX, curY, columns, stride, keepPads)
+        else
+            if shouldShrinkWidth then canResizeWidth = false end
+            curY = PreserveSectionLayout(section, child, startX, curY, stride, keepPads)
         end
-        curY = curY - height
         rowTop = curY
     end
 
@@ -926,6 +1322,9 @@ local function ApplyCompactCategoryRows()
 
     local contentH = math.abs(curY) + 10
     child:SetHeight(contentH)
+    if shouldShrinkWidth and canResizeWidth then
+        ApplyPostLayoutWidth(renderedColumns, columns, stride)
+    end
     ApplyPostLayoutAutoSize(contentH)
     UpdateBagScrollRange()
 end
@@ -1004,13 +1403,18 @@ local function PatchRefresh()
     EUI_Bags.RefreshInventory = function(self, ...)
         RefreshGearVisualOrder()
         local result = originalRefresh(self, ...)
-        if CompactCategoryRowsEnabled() then
+        local compactApplied = false
+        if CompactCategoryRowsEnabled() and SelectedAllItemsView() then
             pcall(ApplyCompactCategoryRows)
+            compactApplied = true
         else
             pcall(RestoreCategoryHeaderLines)
             if HideEmptyRecentItemsEnabled() then
                 pcall(ApplyHideEmptyRecentItems)
             end
+        end
+        if not compactApplied and LimitItemsPerRowEnabled() then
+            pcall(ApplyMaxItemsPerRow)
         end
         return result
     end
@@ -1074,8 +1478,8 @@ local function RegisterOptions()
 
     local config = {
         title = TITLE,
-        description = "Adds Warbound Gear and BoE Gear categories to EllesmereUI Bags, sorts gear by item level, and can compact short category rows.",
-        searchTerms = "bagplus bags boe warbound wue gear item level sort compact condensed category rows recent empty",
+        description = "Adds Warbound Gear and BoE Gear categories to EllesmereUI Bags, sorts gear by item level, and can compact or cap bag rows.",
+        searchTerms = "bagplus bags boe warbound wue gear item level sort compact condensed category rows recent empty maximum items per row onebag multibag",
         pages = { PAGE },
         _euiCore = false,
         buildPage = function(pageName, parent, yOffset)
@@ -1139,6 +1543,27 @@ local function RegisterOptions()
                 "Temporarily hides the Recent Items quickview when it has no items, without changing EllesmereUI's own Recent Items setting."
             ); y = y - h
 
+            _, h = W:Toggle(parent, "Change Maximum Items Per Row", y,
+                function() return LimitItemsPerRowEnabled() end,
+                function(v)
+                    DB().limitItemsPerRow = v and true or false
+                    RebuildBagPlus()
+                end,
+                "Enables a BagPlus maximum for how many item slots can appear on each row in All Items, OneBag, and MultiBag."
+            ); y = y - h
+
+            _, h = W:Slider(parent, "Maximum Items Per Row", y,
+                MAX_ITEMS_PER_ROW_MIN, MAX_ITEMS_PER_ROW_MAX, 1,
+                function() return MaxItemsPerRow() end,
+                function(v)
+                    local n = NormalizeMaxItemsPerRow(v)
+                    if DB().maxItemsPerRow == n then return end
+                    DB().maxItemsPerRow = n
+                    RebuildBagPlus()
+                end,
+                "Sets the maximum row length used when Change Maximum Items Per Row is enabled."
+            ); y = y - h
+
             _, h = W:Button(parent, "Refresh BagPlus", y, function()
                 RebuildBagPlus()
             end); y = y - h
@@ -1153,6 +1578,8 @@ local function RegisterOptions()
             DB().sortGearByItemLevel = true
             DB().compactCategoryRows = false
             DB().hideEmptyRecentItems = true
+            DB().limitItemsPerRow = false
+            DB().maxItemsPerRow = MAX_ITEMS_PER_ROW_DEFAULT
             RebuildBagPlus()
         end,
     }
@@ -1208,7 +1635,8 @@ SlashCmdList.BAGPLUSFORELLESMEREUI = function(msg)
             .. ", wue " .. OnOff(db.wueEnabled ~= false)
             .. ", ilvl " .. SortMode()
             .. ", compact " .. OnOff(CompactCategoryRowsEnabled())
-            .. ", hide empty recent " .. OnOff(HideEmptyRecentItemsEnabled()))
+            .. ", hide empty recent " .. OnOff(HideEmptyRecentItemsEnabled())
+            .. ", max items per row " .. (LimitItemsPerRowEnabled() and tostring(MaxItemsPerRow()) or "off"))
     end
     local function PrintHelp()
         Print("|cff6fe7c5BagPlus|r /bagplus boe on|off")
@@ -1216,6 +1644,8 @@ SlashCmdList.BAGPLUSFORELLESMEREUI = function(msg)
         Print("|cff6fe7c5BagPlus|r /bagplus ilvl asc|desc|off")
         Print("|cff6fe7c5BagPlus|r /bagplus compact on|off")
         Print("|cff6fe7c5BagPlus|r /bagplus emptyrecent on|off")
+        Print("|cff6fe7c5BagPlus|r /bagplus perrow on|off")
+        Print("|cff6fe7c5BagPlus|r /bagplus perrow 5-20")
         Print("|cff6fe7c5BagPlus|r /bagplus refresh")
     end
 
@@ -1274,6 +1704,37 @@ SlashCmdList.BAGPLUSFORELLESMEREUI = function(msg)
         DB().hideEmptyRecentItems = arg == "on"
         RebuildBagPlus()
         Print("|cff6fe7c5BagPlus|r Hide Empty Recent Items: " .. arg)
+        return
+    end
+
+    if cmd == "perrow" or cmd == "itemsperrow" or cmd == "maxrow" then
+        if arg == "on" or arg == "off" then
+            DB().limitItemsPerRow = arg == "on"
+            RebuildBagPlus()
+            Print("|cff6fe7c5BagPlus|r Change Maximum Items Per Row: " .. arg)
+            return
+        end
+
+        local n = tonumber(arg)
+        if not n then
+            Print("|cff6fe7c5BagPlus|r max items per row is "
+                .. (LimitItemsPerRowEnabled() and tostring(MaxItemsPerRow()) or "off")
+                .. " (saved value " .. MaxItemsPerRow() .. ")")
+            Print("|cff6fe7c5BagPlus|r /bagplus perrow on|off")
+            Print("|cff6fe7c5BagPlus|r /bagplus perrow 5-20")
+            return
+        end
+
+        n = math.floor(n + 0.5)
+        if n < MAX_ITEMS_PER_ROW_MIN or n > MAX_ITEMS_PER_ROW_MAX then
+            Print("|cff6fe7c5BagPlus|r max items per row must be "
+                .. MAX_ITEMS_PER_ROW_MIN .. "-" .. MAX_ITEMS_PER_ROW_MAX)
+            return
+        end
+        DB().maxItemsPerRow = n
+        DB().limitItemsPerRow = true
+        RebuildBagPlus()
+        Print("|cff6fe7c5BagPlus|r Maximum Items Per Row: " .. n)
         return
     end
 

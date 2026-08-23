@@ -16,6 +16,7 @@ CHECK_TAG=1
 CREATE_TAG=0
 FORCE=0
 FETCH_TAGS=0
+PUSH=0
 
 usage() {
     cat <<USAGE
@@ -26,6 +27,7 @@ Builds releases/<toc-version>/${ZIP_NAME}.
 Options:
   --fetch-tags      Fetch remote tags before validating v<toc-version>.
   --tag             Create the expected Git tag if it does not already exist.
+  --push            Push the current branch and v<toc-version> tag to origin after a successful build.
   --no-tag-check    Build without requiring HEAD to be tagged v<toc-version>.
   --allow-dirty     Build even when the working tree has uncommitted changes.
   --force           Overwrite an existing release zip.
@@ -34,7 +36,7 @@ Options:
 Release flow:
   1. Update ${TOC_PATH} and changelog.md.
   2. Commit the release changes.
-  3. Run scripts/release.sh --tag.
+  3. Run scripts/release.sh --tag --push.
 USAGE
 }
 
@@ -50,6 +52,9 @@ while [ "$#" -gt 0 ]; do
             ;;
         --tag)
             CREATE_TAG=1
+            ;;
+        --push)
+            PUSH=1
             ;;
         --no-tag-check)
             CHECK_TAG=0
@@ -86,6 +91,18 @@ esac
 EXPECTED_TAG="${TAG_PREFIX}${VERSION}"
 
 git rev-parse --is-inside-work-tree >/dev/null 2>&1 || die "not inside a Git work tree"
+
+if [ "$PUSH" -eq 1 ] && [ "$CHECK_TAG" -ne 1 ]; then
+    die "--push requires tag validation; remove --no-tag-check"
+fi
+if [ "$PUSH" -eq 1 ] && [ "$ALLOW_DIRTY" -eq 1 ]; then
+    die "--push cannot be used with --allow-dirty"
+fi
+
+CURRENT_BRANCH=""
+if [ "$PUSH" -eq 1 ]; then
+    CURRENT_BRANCH="$(git symbolic-ref --quiet --short HEAD)" || die "--push requires checking out a branch"
+fi
 
 if [ "$FETCH_TAGS" -eq 1 ]; then
     git fetch --tags --quiet
@@ -184,4 +201,11 @@ if [ "$CHECK_TAG" -eq 1 ]; then
     printf 'Git tag %s\n' "$EXPECTED_TAG"
 else
     printf 'Git tag check skipped\n'
+fi
+
+if [ "$PUSH" -eq 1 ]; then
+    printf 'Pushing branch %s to origin\n' "$CURRENT_BRANCH"
+    git push origin "$CURRENT_BRANCH"
+    printf 'Pushing Git tag %s\n' "$EXPECTED_TAG"
+    git push origin "$EXPECTED_TAG"
 fi

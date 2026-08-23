@@ -28,6 +28,9 @@ BagPlus does not replace EllesmereUI Bags. It extends the existing bag category 
 /bagplus compact off
 /bagplus emptyrecent on
 /bagplus emptyrecent off
+/bagplus perrow on
+/bagplus perrow off
+/bagplus perrow 10
 /bagplus status
 /bagplus refresh
 ```
@@ -39,3 +42,5 @@ BagPlus does not replace EllesmereUI Bags. It extends the existing bag category 
 - Item-level sorting: descending
 - Compact category rows: off
 - Hide empty Recent Items: on
+- Change maximum items per row: off
+- Maximum items per row: 12
