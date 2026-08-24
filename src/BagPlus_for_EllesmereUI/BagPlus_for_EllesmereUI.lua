@@ -24,7 +24,7 @@ local CATEGORY_DEFS = {
 }
 
 local MAX_ITEMS_PER_ROW_MIN = 5
-local MAX_ITEMS_PER_ROW_MAX = 20
+local MAX_ITEMS_PER_ROW_MAX = 17
 local MAX_ITEMS_PER_ROW_DEFAULT = 12
 
 local function NormalizeMaxItemsPerRow(value)
@@ -1645,7 +1645,8 @@ SlashCmdList.BAGPLUSFORELLESMEREUI = function(msg)
         Print("|cff6fe7c5BagPlus|r /bagplus compact on|off")
         Print("|cff6fe7c5BagPlus|r /bagplus emptyrecent on|off")
         Print("|cff6fe7c5BagPlus|r /bagplus perrow on|off")
-        Print("|cff6fe7c5BagPlus|r /bagplus perrow 5-20")
+        Print("|cff6fe7c5BagPlus|r /bagplus perrow "
+            .. MAX_ITEMS_PER_ROW_MIN .. "-" .. MAX_ITEMS_PER_ROW_MAX)
         Print("|cff6fe7c5BagPlus|r /bagplus refresh")
     end
 
@@ -1721,7 +1722,8 @@ SlashCmdList.BAGPLUSFORELLESMEREUI = function(msg)
                 .. (LimitItemsPerRowEnabled() and tostring(MaxItemsPerRow()) or "off")
                 .. " (saved value " .. MaxItemsPerRow() .. ")")
             Print("|cff6fe7c5BagPlus|r /bagplus perrow on|off")
-            Print("|cff6fe7c5BagPlus|r /bagplus perrow 5-20")
+            Print("|cff6fe7c5BagPlus|r /bagplus perrow "
+                .. MAX_ITEMS_PER_ROW_MIN .. "-" .. MAX_ITEMS_PER_ROW_MAX)
             return
         end
 

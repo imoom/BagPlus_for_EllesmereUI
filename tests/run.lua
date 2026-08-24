@@ -413,7 +413,7 @@ test("initializes defaults and migrates old saved keys", function()
     assertNil(db.condensedCategoryRows)
     assertEqual(db.hideEmptyRecentItems, true)
     assertEqual(db.limitItemsPerRow, false)
-    assertEqual(db.maxItemsPerRow, 20)
+    assertEqual(db.maxItemsPerRow, 17)
     assertNil(db.maxBagColumns)
 end)
 
@@ -449,6 +449,10 @@ test("perrow slash command validates, saves, and toggles the feature", function(
     loadAddon(ctx)
 
     slash("perrow 17")
+    assertEqual(BagPlusForEllesmereUIDB.limitItemsPerRow, true)
+    assertEqual(BagPlusForEllesmereUIDB.maxItemsPerRow, 17)
+
+    slash("perrow 18")
     assertEqual(BagPlusForEllesmereUIDB.limitItemsPerRow, true)
     assertEqual(BagPlusForEllesmereUIDB.maxItemsPerRow, 17)
 

@@ -4,7 +4,7 @@ All notable changes to BagPlus for EllesmereUI will be documented in this file.
 
 ## Unreleased
 
-- Added an opt-in Change Maximum Items Per Row setting with a 5-20 Maximum Items Per Row slider, plus `/bagplus perrow`, for capping rendered bag rows in All Items, OneBag, and MultiBag.
+- Added an opt-in Change Maximum Items Per Row setting with a 5-17 Maximum Items Per Row slider, plus `/bagplus perrow`, for capping rendered bag rows in All Items, OneBag, and MultiBag.
 - Made Maximum Items Per Row also apply when EllesmereUI's Group Armory by Slot and Compact Slot Groups options are both enabled.
 - Added a local `scripts/test.sh` test runner with mocked WoW and EllesmereUI runtime coverage for BagPlus startup, slash commands, category routing, and row-cap layout behavior.
 - Added a `scripts/release.sh --push` option for pushing the release branch and tag to GitHub after a successful release build.
