@@ -31,6 +31,7 @@ BagPlus does not replace EllesmereUI Bags. It extends the existing bag category 
 /bagplus perrow on
 /bagplus perrow off
 /bagplus perrow 10
+/bagplus reagents
 /bagplus status
 /bagplus refresh
 ```
@@ -44,3 +45,5 @@ BagPlus does not replace EllesmereUI Bags. It extends the existing bag category 
 - Hide empty Recent Items: on
 - Change maximum items per row: off
 - Maximum items per row: 12
+
+The reagent-bag button in the inventory header, and `/bagplus reagents`, move crafting reagents from the main bags into the reagent bag without running a full bag sort.

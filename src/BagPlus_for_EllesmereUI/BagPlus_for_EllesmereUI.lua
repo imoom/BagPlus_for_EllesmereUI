@@ -37,7 +37,16 @@ end
 
 local patched
 local refreshPatched
+local reagentButtonPatched
 local refreshingOrder
+local reagentMoveLocked
+local Print
+
+local REAGENT_BAG_ID = 5
+local REAGENT_MOVE_DELAY = 0.08
+local REAGENT_MOVE_RETRY_LIMIT = 80
+local REAGENT_BUTTON_ICON = 3622222
+local REAGENT_BUTTON_MASK = "Interface\\AddOns\\EllesmereUI\\media\\portraits\\circle_mask.tga"
 
 local function DB()
     if type(BagPlusForEllesmereUIDB) ~= "table" then
@@ -517,6 +526,324 @@ local function RefreshBags()
     if _G.EUI_Bank and EUI_Bank.RefreshBank and EUI_Bank:IsVisible() then
         EUI_Bank:RefreshBank()
     end
+end
+
+local function RefreshBagWindows()
+    RefreshBags()
+    if _G.EUI_BagsReagent and EUI_BagsReagent.RefreshInventory and EUI_BagsReagent:IsVisible() then
+        EUI_BagsReagent:RefreshInventory()
+    end
+end
+
+local function ReadItemDetails(item)
+    if not item then return nil, 1, nil, nil end
+
+    local name, maxStack, classID, isCraftingReagent
+    if C_Item and C_Item.GetItemInfo then
+        local itemName, itemLink, itemQuality, itemLevel, itemMinLevel, itemType, itemSubType,
+              itemStackCount, itemEquipLoc, itemTexture, sellPrice, itemClassID, itemSubClassID,
+              bindType, expansionID, setID, reagent = C_Item.GetItemInfo(item)
+        name = itemName
+        maxStack = itemStackCount
+        classID = itemClassID
+        isCraftingReagent = reagent
+    end
+
+    if not name and GetItemInfo then
+        local itemName, itemLink, itemQuality, itemLevel, itemMinLevel, itemType, itemSubType,
+              itemStackCount, itemEquipLoc, itemTexture, sellPrice, itemClassID, itemSubClassID,
+              bindType, expansionID, setID, reagent = GetItemInfo(item)
+        name = itemName
+        maxStack = itemStackCount or maxStack
+        classID = itemClassID or classID
+        isCraftingReagent = reagent
+    end
+
+    if not classID and GetItemInfoInstant then
+        local itemID, itemType, itemSubType, itemEquipLoc, icon, instantClassID = GetItemInfoInstant(item)
+        classID = instantClassID
+    end
+
+    maxStack = tonumber(maxStack) or 1
+    if maxStack < 1 then maxStack = 1 end
+    return name, maxStack, classID, isCraftingReagent
+end
+
+local function IsCraftingReagent(itemLink, itemID)
+    local item = itemLink or itemID
+    local name, _, classID, reagent = ReadItemDetails(item)
+    if reagent ~= nil then return reagent == true end
+
+    -- If full item data is not cached yet, keep the fallback conservative.
+    local ic = Enum and Enum.ItemClass
+    return not name and ic and classID == ic.Reagent
+end
+
+local function ContainerItemLink(bag, slot, info)
+    if C_Container and C_Container.GetContainerItemLink then
+        return C_Container.GetContainerItemLink(bag, slot)
+    end
+    return info and info.hyperlink
+end
+
+local function StackKey(itemID, itemLink)
+    if itemLink and itemLink ~= "" then return itemLink end
+    return itemID and ("item:" .. itemID) or nil
+end
+
+local function CursorOccupied()
+    if GetCursorInfo then
+        local cursorType = GetCursorInfo()
+        return cursorType ~= nil
+    end
+    if CursorHasItem then return CursorHasItem() end
+    return false
+end
+
+local function SlotIsLocked(bag, slot, info)
+    if info and info.isLocked then return true end
+    if not (C_Item and C_Item.IsLocked and ItemLocation and ItemLocation.CreateFromBagAndSlot) then
+        return false
+    end
+    local loc = ItemLocation:CreateFromBagAndSlot(bag, slot)
+    return loc and C_Item.IsLocked(loc) or false
+end
+
+local function SlotData(bag, slot, info)
+    local itemLink = ContainerItemLink(bag, slot, info)
+    local itemID = info and info.itemID
+    local _, maxStack = ReadItemDetails(itemLink or itemID)
+    return {
+        bag = bag,
+        slot = slot,
+        info = info,
+        itemID = itemID,
+        itemLink = itemLink,
+        stackCount = tonumber(info and info.stackCount) or 1,
+        maxStack = maxStack,
+        stackKey = StackKey(itemID, itemLink),
+    }
+end
+
+local function HasStackRoom(data)
+    return data and data.itemID and data.stackKey and data.maxStack > 1
+        and data.stackCount < data.maxStack
+end
+
+local function AddPartial(partialByKey, partialKeys, data)
+    local key = data and data.stackKey
+    if not key then return end
+    if not partialByKey[key] then
+        partialByKey[key] = {}
+        partialKeys[#partialKeys + 1] = key
+    end
+    partialByKey[key][#partialByKey[key] + 1] = data
+end
+
+local function SortPartialsByRoom(a, b)
+    if a.stackCount ~= b.stackCount then return a.stackCount < b.stackCount end
+    return a.slot < b.slot
+end
+
+local function BuildReagentMoveState()
+    if not (C_Container and C_Container.GetContainerNumSlots and C_Container.GetContainerItemInfo) then
+        return nil, "missing-api"
+    end
+
+    local reagentSlots = C_Container.GetContainerNumSlots(REAGENT_BAG_ID) or 0
+    if reagentSlots <= 0 then return nil, "no-reagent-bag" end
+
+    local emptySlots = {}
+    local partialByKey = {}
+    local partialKeys = {}
+    local lockedCount = 0
+    for slot = 1, reagentSlots do
+        local info = C_Container.GetContainerItemInfo(REAGENT_BAG_ID, slot)
+        if info then
+            local data = SlotData(REAGENT_BAG_ID, slot, info)
+            if HasStackRoom(data) then
+                if SlotIsLocked(REAGENT_BAG_ID, slot, info) then
+                    lockedCount = lockedCount + 1
+                else
+                    AddPartial(partialByKey, partialKeys, data)
+                end
+            end
+        else
+            emptySlots[#emptySlots + 1] = { bag = REAGENT_BAG_ID, slot = slot }
+        end
+    end
+
+    local sources = {}
+    for bag = 0, 4 do
+        local numSlots = C_Container.GetContainerNumSlots(bag) or 0
+        for slot = 1, numSlots do
+            local info = C_Container.GetContainerItemInfo(bag, slot)
+            if info and info.itemID then
+                local data = SlotData(bag, slot, info)
+                if IsCraftingReagent(data.itemLink, data.itemID) then
+                    if SlotIsLocked(bag, slot, info) then
+                        lockedCount = lockedCount + 1
+                    else
+                        sources[#sources + 1] = data
+                    end
+                end
+            end
+        end
+    end
+
+    return {
+        sources = sources,
+        emptySlots = emptySlots,
+        partialByKey = partialByKey,
+        partialKeys = partialKeys,
+        lockedCount = lockedCount,
+    }
+end
+
+local function PickupIntoSlot(srcBag, srcSlot, destBag, destSlot)
+    if not (C_Container and C_Container.PickupContainerItem) then return false, "missing-api" end
+    if CursorOccupied() then return false, "cursor-busy" end
+
+    C_Container.PickupContainerItem(srcBag, srcSlot)
+    if GetCursorInfo and not CursorOccupied() then return false, "locked" end
+
+    C_Container.PickupContainerItem(destBag, destSlot)
+    if CursorOccupied() then
+        C_Container.PickupContainerItem(srcBag, srcSlot)
+    end
+    if ClearCursor then ClearCursor() end
+    return true
+end
+
+local function FindNextReagentMove()
+    local state, reason = BuildReagentMoveState()
+    if not state then return nil, reason end
+
+    for _, key in ipairs(state.partialKeys) do
+        local partials = state.partialByKey[key]
+        if partials and #partials > 1 then
+            table.sort(partials, SortPartialsByRoom)
+            local source = partials[1]
+            local target = partials[#partials]
+            if source and target and source.slot ~= target.slot then
+                return { source = source, target = target }
+            end
+        end
+    end
+
+    for _, source in ipairs(state.sources) do
+        local partials = state.partialByKey[source.stackKey]
+        if partials and #partials > 0 then
+            table.sort(partials, SortPartialsByRoom)
+            for _, target in ipairs(partials) do
+                if target.slot and target.stackCount < target.maxStack then
+                    return { source = source, target = target }
+                end
+            end
+        end
+    end
+
+    if #state.sources == 0 then
+        return nil, state.lockedCount > 0 and "locked-wait" or "done"
+    end
+    if #state.emptySlots == 0 then
+        return nil, state.lockedCount > 0 and "locked-wait" or "full"
+    end
+
+    return { source = state.sources[1], target = state.emptySlots[1] }
+end
+
+local function MoveOneReagentStack()
+    local move, reason = FindNextReagentMove()
+    if not move then return false, reason end
+    local source, target = move.source, move.target
+    local moved, moveReason = PickupIntoSlot(source.bag, source.slot, target.bag, target.slot)
+    return moved, moveReason
+end
+
+local function SetReagentMoveLocked(locked)
+    reagentMoveLocked = locked and true or nil
+    local btn = _G.EUI_Bags and EUI_Bags._bagPlusReagentBtn
+    if not btn then return end
+
+    btn._bagPlusLocked = reagentMoveLocked
+    if btn.EnableMouse then btn:EnableMouse(not reagentMoveLocked) end
+    if btn.icon and btn.icon.SetAlpha then
+        btn.icon:SetAlpha(reagentMoveLocked and 0.25 or 0.9)
+    end
+end
+
+local function MoveReagentsToReagentBag(printResult)
+    if reagentMoveLocked then return false end
+    if InCombatLockdown and InCombatLockdown() then
+        if printResult ~= false then Print("|cff6fe7c5BagPlus|r Cannot move reagents while in combat.") end
+        return false
+    end
+    if CursorOccupied() then
+        if printResult ~= false then Print("|cff6fe7c5BagPlus|r Clear your cursor first.") end
+        return false
+    end
+    if not (C_Container and C_Container.GetContainerNumSlots and C_Container.PickupContainerItem) then
+        if printResult ~= false then Print("|cff6fe7c5BagPlus|r Container API is not available.") end
+        return false
+    end
+    if (C_Container.GetContainerNumSlots(REAGENT_BAG_ID) or 0) <= 0 then
+        if printResult ~= false then Print("|cff6fe7c5BagPlus|r No reagent bag is equipped.") end
+        return false
+    end
+    if _G.EUI_Bags and EUI_Bags.refreshEnabled == false then
+        if printResult ~= false then Print("|cff6fe7c5BagPlus|r Bags are already busy.") end
+        return false
+    end
+
+    local previousRefreshEnabled = _G.EUI_Bags and EUI_Bags.refreshEnabled
+    if _G.EUI_Bags then EUI_Bags.refreshEnabled = false end
+    SetReagentMoveLocked(true)
+
+    local movedCount = 0
+    local lastReason
+    local attempts = 0
+
+    local function Finish(reason)
+        if _G.EUI_Bags then EUI_Bags.refreshEnabled = previousRefreshEnabled ~= false end
+        SetReagentMoveLocked(false)
+        RefreshGearVisualOrder()
+        RefreshBagWindows()
+
+        if printResult ~= false then
+            if movedCount > 0 then
+                Print("|cff6fe7c5BagPlus|r Moved reagents to the reagent bag.")
+            elseif reason == "full" then
+                Print("|cff6fe7c5BagPlus|r Reagent bag is full.")
+            elseif reason == "locked" or reason == "locked-wait" or reason == "retry-limit" then
+                Print("|cff6fe7c5BagPlus|r Some reagent slots are locked. Try again in a moment.")
+            else
+                Print("|cff6fe7c5BagPlus|r No reagents need moving.")
+            end
+        end
+    end
+
+    local function Step()
+        attempts = attempts + 1
+        local moved, reason = MoveOneReagentStack()
+        lastReason = reason
+        if moved then
+            movedCount = movedCount + 1
+        end
+
+        if (moved or reason == "locked" or reason == "locked-wait") and attempts < REAGENT_MOVE_RETRY_LIMIT then
+            if C_Timer and C_Timer.After then
+                C_Timer.After(REAGENT_MOVE_DELAY, Step)
+            else
+                Step()
+            end
+        else
+            Finish(moved and "retry-limit" or lastReason)
+        end
+    end
+
+    Step()
+    return true
 end
 
 local BAG_SLOT_SIZE = 34
@@ -1329,7 +1656,7 @@ local function ApplyCompactCategoryRows()
     UpdateBagScrollRange()
 end
 
-local function Print(msg)
+function Print(msg)
     if EllesmereUI and EllesmereUI.Print then
         EllesmereUI.Print(msg)
     else
@@ -1422,6 +1749,88 @@ local function PatchRefresh()
     return true
 end
 
+local function PositionReagentButton()
+    local bags = _G.EUI_Bags
+    local btn = bags and bags._bagPlusReagentBtn
+    local header = bags and bags.Header
+    if not (btn and header and btn.ClearAllPoints and btn.SetPoint) then return end
+
+    btn:ClearAllPoints()
+    local sortBtn = bags._sortBtn
+    local searchBox = bags._searchBox
+    if sortBtn and (not sortBtn.IsShown or sortBtn:IsShown()) then
+        btn:SetPoint("RIGHT", sortBtn, "LEFT", -6, 0)
+    elseif searchBox then
+        btn:SetPoint("RIGHT", searchBox, "LEFT", -13, 0)
+    else
+        btn:SetPoint("RIGHT", header, "RIGHT", -210, 0)
+    end
+
+    local bagsBtn = bags._bagsBtn
+    if bagsBtn and bagsBtn ~= btn and bagsBtn.ClearAllPoints and bagsBtn.SetPoint then
+        bagsBtn:ClearAllPoints()
+        bagsBtn:SetPoint("RIGHT", btn, "LEFT", -6, 0)
+    end
+end
+
+local function StyleReagentButtonIcon(btn)
+    if not (btn and btn.icon) then return end
+
+    btn.icon:SetAllPoints()
+    btn.icon:SetTexture(REAGENT_BUTTON_ICON)
+    btn.icon:SetAlpha(0.9)
+    if btn.icon.SetTexCoord then btn.icon:SetTexCoord(0.08, 0.92, 0.08, 0.92) end
+
+    if btn.CreateMaskTexture and btn.icon.AddMaskTexture and not btn.iconMask then
+        local mask = btn:CreateMaskTexture()
+        mask:SetTexture(REAGENT_BUTTON_MASK, "CLAMPTOBLACKADDITIVE", "CLAMPTOBLACKADDITIVE")
+        mask:SetAllPoints(btn.icon)
+        pcall(btn.icon.AddMaskTexture, btn.icon, mask)
+        btn.iconMask = mask
+    end
+end
+
+local function PatchReagentButton()
+    if not (_G.EUI_Bags and EUI_Bags.Header and CreateFrame) then return reagentButtonPatched end
+
+    local btn = EUI_Bags._bagPlusReagentBtn
+    if not btn then
+        btn = CreateFrame("Button", nil, EUI_Bags.Header)
+        btn:SetSize(24, 24)
+        if btn.SetFrameLevel and EUI_Bags.Header.GetFrameLevel then
+            btn:SetFrameLevel((EUI_Bags.Header:GetFrameLevel() or 1) + 2)
+        end
+        btn.icon = btn:CreateTexture(nil, "OVERLAY")
+        StyleReagentButtonIcon(btn)
+        btn:SetScript("OnEnter", function(self)
+            if self.icon and self.icon.SetAlpha and not self._bagPlusLocked then self.icon:SetAlpha(1) end
+            if EllesmereUI and EllesmereUI.ShowWidgetTooltip then
+                EllesmereUI.ShowWidgetTooltip(self, "Move Reagents to Reagent Bag")
+            end
+        end)
+        btn:SetScript("OnLeave", function(self)
+            if self.icon and self.icon.SetAlpha then
+                self.icon:SetAlpha(self._bagPlusLocked and 0.25 or 0.9)
+            end
+            if EllesmereUI and EllesmereUI.HideWidgetTooltip then EllesmereUI.HideWidgetTooltip() end
+        end)
+        btn:SetScript("OnClick", function()
+            MoveReagentsToReagentBag(true)
+        end)
+        EUI_Bags._bagPlusReagentBtn = btn
+        EUI_Bags._bagPlusMoveReagentsToReagentBag = MoveReagentsToReagentBag
+        EUI_Bags._bagPlusMoveOneReagentStack = MoveOneReagentStack
+    else
+        StyleReagentButtonIcon(btn)
+        EUI_Bags._bagPlusMoveReagentsToReagentBag = MoveReagentsToReagentBag
+        EUI_Bags._bagPlusMoveOneReagentStack = MoveOneReagentStack
+    end
+
+    PositionReagentButton()
+    reagentButtonPatched = true
+    return true
+end
+
 local function EnsureSidebarEntry()
     local EUI = EllesmereUI
     if not EUI then return end
@@ -1478,8 +1887,8 @@ local function RegisterOptions()
 
     local config = {
         title = TITLE,
-        description = "Adds Warbound Gear and BoE Gear categories to EllesmereUI Bags, sorts gear by item level, and can compact or cap bag rows.",
-        searchTerms = "bagplus bags boe warbound wue gear item level sort compact condensed category rows recent empty maximum items per row onebag multibag",
+        description = "Adds Warbound Gear and BoE Gear categories to EllesmereUI Bags, sorts gear by item level, can compact or cap bag rows, and can move reagents into the reagent bag.",
+        searchTerms = "bagplus bags boe warbound wue gear item level sort compact condensed category rows recent empty maximum items per row onebag multibag reagent reagents mats",
         pages = { PAGE },
         _euiCore = false,
         buildPage = function(pageName, parent, yOffset)
@@ -1595,6 +2004,7 @@ end
 local function TryPatch()
     PatchManager()
     PatchRefresh()
+    PatchReagentButton()
     RegisterOptions()
     RefreshGearVisualOrder()
 end
@@ -1602,7 +2012,7 @@ end
 local retries = 0
 local function RetryPatch()
     TryPatch()
-    if patched and refreshPatched then return end
+    if patched and refreshPatched and reagentButtonPatched then return end
     retries = retries + 1
     if retries <= 20 and C_Timer and C_Timer.After then
         C_Timer.After(0.25, RetryPatch)
@@ -1647,6 +2057,7 @@ SlashCmdList.BAGPLUSFORELLESMEREUI = function(msg)
         Print("|cff6fe7c5BagPlus|r /bagplus perrow on|off")
         Print("|cff6fe7c5BagPlus|r /bagplus perrow "
             .. MAX_ITEMS_PER_ROW_MIN .. "-" .. MAX_ITEMS_PER_ROW_MAX)
+        Print("|cff6fe7c5BagPlus|r /bagplus reagents")
         Print("|cff6fe7c5BagPlus|r /bagplus refresh")
     end
 
@@ -1744,6 +2155,11 @@ SlashCmdList.BAGPLUSFORELLESMEREUI = function(msg)
         TryPatch()
         RebuildBagPlus()
         Print("|cff6fe7c5BagPlus|r refreshed.")
+        return
+    end
+
+    if cmd == "reagents" or cmd == "reagent" or cmd == "mats" then
+        MoveReagentsToReagentBag(true)
         return
     end
 

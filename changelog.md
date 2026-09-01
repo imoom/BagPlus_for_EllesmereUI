@@ -4,6 +4,8 @@ All notable changes to BagPlus for EllesmereUI will be documented in this file.
 
 ## Unreleased
 
+- Added a BagPlus reagent-bag button and `/bagplus reagents` command that move crafting reagents from the main bags into the reagent bag without running a full sort.
+
 ## 26.4 - 2026-08-24
 
 - Added an opt-in Change Maximum Items Per Row setting with a 5-17 Maximum Items Per Row slider, plus `/bagplus perrow`, for capping rendered bag rows in All Items, OneBag, and MultiBag.
