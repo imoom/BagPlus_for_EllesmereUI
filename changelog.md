@@ -2,7 +2,7 @@
 
 All notable changes to BagPlus for EllesmereUI will be documented in this file.
 
-## Unreleased
+## 26.5 - 2026-09-01
 
 - Added a BagPlus reagent-bag button and `/bagplus reagents` command that move crafting reagents from the main bags into the reagent bag without running a full sort.
 

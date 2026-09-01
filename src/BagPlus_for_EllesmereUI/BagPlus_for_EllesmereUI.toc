@@ -3,7 +3,7 @@
 ## Category: Inventory
 ## Notes: Extra EllesmereUI bag categories, item-level gear sorting, reagent-bag moves, optional compact category rows, and empty Recent Items cleanup.
 ## Author: Shamongus
-## Version: 26.4
+## Version: 26.5
 ## X-License: MIT
 ## Dependencies: EllesmereUI, EllesmereUIBags
 ## SavedVariables: BagPlusForEllesmereUIDB
