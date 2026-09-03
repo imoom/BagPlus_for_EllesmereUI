@@ -2,6 +2,11 @@
 
 All notable changes to BagPlus for EllesmereUI will be documented in this file.
 
+## 26.6 - 2026-09-03
+
+- Added bank and warbank right-click deposit routing that honors Blizzard's assigned bank tab categories for matching items.
+- Added a dedicated Blizzard warbank cleanup button to the EllesmereUI bank header.
+
 ## 26.5 - 2026-09-01
 
 - Added a BagPlus reagent-bag button and `/bagplus reagents` command that move crafting reagents from the main bags into the reagent bag without running a full sort.

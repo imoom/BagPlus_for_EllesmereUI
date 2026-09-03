@@ -846,6 +846,648 @@ local function MoveReagentsToReagentBag(printResult)
     return true
 end
 
+local BankCategoryRouting = (function()
+local bankCategoryRoutingPatched
+local bankCategoryTransferFrame
+local bankCategoryTransferQueue = {}
+local bankCategoryAllocatedSlots = {}
+
+local function BitBand(a, b)
+    a, b = tonumber(a) or 0, tonumber(b) or 0
+    if bit and bit.band then return bit.band(a, b) end
+    if bit32 and bit32.band then return bit32.band(a, b) end
+
+    local result = 0
+    local bitValue = 1
+    while a > 0 and b > 0 do
+        local aa, bb = a % 2, b % 2
+        if aa == 1 and bb == 1 then result = result + bitValue end
+        a = math.floor(a / 2)
+        b = math.floor(b / 2)
+        bitValue = bitValue * 2
+    end
+    return result
+end
+
+local function BitBor(a, b)
+    a, b = tonumber(a) or 0, tonumber(b) or 0
+    if bit and bit.bor then return bit.bor(a, b) end
+    if bit32 and bit32.bor then return bit32.bor(a, b) end
+    return a + b - BitBand(a, b)
+end
+
+local function CombineFlags(...)
+    local flags = 0
+    for i = 1, select("#", ...) do
+        flags = BitBor(flags, select(i, ...))
+    end
+    return flags
+end
+
+local function BagSlotFlagValue(name, fallback)
+    local flags = Enum and Enum.BagSlotFlags
+    return (flags and flags[name]) or fallback or 0
+end
+
+local BANK_FLAG_DISABLE_AUTOSORT = BagSlotFlagValue("DisableAutoSort", 0x1)
+local BANK_FLAG_EQUIPMENT = BagSlotFlagValue("ClassEquipment", 0x2)
+local BANK_FLAG_CONSUMABLES = BagSlotFlagValue("ClassConsumables", 0x4)
+local BANK_FLAG_PROFESSION_GOODS = BagSlotFlagValue("ClassProfessionGoods", BagSlotFlagValue("ClassTradeGoods", 0x8))
+local BANK_FLAG_JUNK = BagSlotFlagValue("ClassJunk", 0x10)
+local BANK_FLAG_QUEST = BagSlotFlagValue("ClassQuestItems", 0x20)
+local BANK_FLAG_REAGENTS = BagSlotFlagValue("ClassReagents", 0x80)
+local BANK_FLAG_CURRENT_EXPANSION = BagSlotFlagValue("ExpansionCurrent", 0x100)
+local BANK_FLAG_LEGACY_EXPANSION = BagSlotFlagValue("ExpansionLegacy", 0x200)
+
+local BANK_CLASS_MASK = CombineFlags(
+    BANK_FLAG_EQUIPMENT,
+    BANK_FLAG_CONSUMABLES,
+    BANK_FLAG_PROFESSION_GOODS,
+    BANK_FLAG_JUNK,
+    BANK_FLAG_QUEST,
+    BANK_FLAG_REAGENTS
+)
+local BANK_EXPANSION_MASK = CombineFlags(BANK_FLAG_CURRENT_EXPANSION, BANK_FLAG_LEGACY_EXPANSION)
+local BANK_ROUTE_MASK = CombineFlags(BANK_CLASS_MASK, BANK_EXPANSION_MASK)
+
+local function ItemClassValue(name, fallback)
+    local itemClass = Enum and Enum.ItemClass
+    return (itemClass and itemClass[name]) or fallback
+end
+
+local IC_CONSUMABLE = ItemClassValue("Consumable", 0)
+local IC_WEAPON = ItemClassValue("Weapon", 2)
+local IC_GEM = ItemClassValue("Gem", 3)
+local IC_ARMOR = ItemClassValue("Armor", 4)
+local IC_REAGENT = ItemClassValue("Reagent", 5)
+local IC_TRADEGOODS = ItemClassValue("Tradegoods", 7)
+local IC_ITEM_ENHANCEMENT = ItemClassValue("ItemEnhancement", 8)
+local IC_RECIPE = ItemClassValue("Recipe", 9)
+local IC_QUEST = ItemClassValue("Questitem", 12)
+local IC_PROFESSION = ItemClassValue("Profession", 19)
+
+local function PoorItemQuality()
+    if Enum and Enum.ItemQuality and Enum.ItemQuality.Poor ~= nil then return Enum.ItemQuality.Poor end
+    if ITEM_QUALITY_POOR ~= nil then return ITEM_QUALITY_POOR end
+    if LE_ITEM_QUALITY_POOR ~= nil then return LE_ITEM_QUALITY_POOR end
+    return 0
+end
+
+local function CurrentExpansionLevel()
+    if type(LE_EXPANSION_LEVEL_CURRENT) == "number" then return LE_EXPANSION_LEVEL_CURRENT end
+    if GetExpansionLevel then
+        local ok, level = pcall(GetExpansionLevel)
+        if ok then return tonumber(level) end
+    end
+    return nil
+end
+
+local function BankTypeValue(name)
+    local bankType = Enum and Enum.BankType
+    return bankType and bankType[name]
+end
+
+local function BankTabLimit(bankType)
+    return bankType == BankTypeValue("Account") and 5 or 6
+end
+
+local function BankBagIDForIndex(bankType, index)
+    local bagIndex = Enum and Enum.BagIndex
+    if not bagIndex then return nil end
+    local prefix = bankType == BankTypeValue("Account") and "AccountBankTab_" or "CharacterBankTab_"
+    return bagIndex[prefix .. tostring(index)]
+end
+
+local function IsBankTypeBagID(bankType, bagID)
+    if not bagID then return false end
+    for index = 1, BankTabLimit(bankType) do
+        if bagID == BankBagIDForIndex(bankType, index) then return true end
+    end
+    return false
+end
+
+local function ContainerBagSlotFlags(bagID)
+    if not (C_Container and C_Container.GetBagSlotFlag) then return 0 end
+    local flags = 0
+    local values = {
+        BANK_FLAG_DISABLE_AUTOSORT,
+        BANK_FLAG_EQUIPMENT,
+        BANK_FLAG_CONSUMABLES,
+        BANK_FLAG_PROFESSION_GOODS,
+        BANK_FLAG_JUNK,
+        BANK_FLAG_QUEST,
+        BANK_FLAG_REAGENTS,
+        BANK_FLAG_CURRENT_EXPANSION,
+        BANK_FLAG_LEGACY_EXPANSION,
+    }
+    for _, flag in ipairs(values) do
+        if flag and flag ~= 0 then
+            local ok, enabled = pcall(C_Container.GetBagSlotFlag, bagID, flag)
+            if ok and enabled then flags = BitBor(flags, flag) end
+        end
+    end
+    return flags
+end
+
+local function AddBankTab(tabs, seen, bankType, bagID, index, numSlots, depositFlags, isWarband)
+    if not bagID or seen[bagID] then return end
+    numSlots = tonumber(numSlots) or (C_Container and C_Container.GetContainerNumSlots and C_Container.GetContainerNumSlots(bagID)) or 0
+    if numSlots <= 0 then return end
+
+    seen[bagID] = true
+    tabs[#tabs + 1] = {
+        bagID = bagID,
+        index = index or (#tabs + 1),
+        numSlots = numSlots,
+        depositFlags = BitBor(tonumber(depositFlags) or 0, ContainerBagSlotFlags(bagID)),
+        isWarband = isWarband,
+    }
+end
+
+local function FetchBankTabsFromEUI(bank, bankType, tabs, seen)
+    local allTabs = bank and bank._allTabs
+    if type(allTabs) ~= "table" then return end
+    local wantWarbank = bankType == BankTypeValue("Account")
+
+    for index, tab in ipairs(allTabs) do
+        if type(tab) == "table" and tab.isWarband == wantWarbank then
+            AddBankTab(tabs, seen, bankType, tab.bagID, index, tab.numSlots, tab.depositFlags, tab.isWarband)
+        end
+    end
+end
+
+local function FetchBankTabsFromBankAPI(bankType, tabs, seen)
+    local tabData
+    if C_Bank and C_Bank.FetchPurchasedBankTabData and Enum and Enum.BankType then
+        local ok, data = pcall(C_Bank.FetchPurchasedBankTabData, bankType)
+        if ok then tabData = data end
+    end
+    if type(tabData) ~= "table" then return end
+
+    local wantWarbank = bankType == BankTypeValue("Account")
+    for index, data in ipairs(tabData) do
+        local bagID = type(data) == "table" and (data.bagID or data.tabID or data.ID or data.id) or nil
+        if not IsBankTypeBagID(bankType, bagID) then
+            bagID = BankBagIDForIndex(bankType, index)
+        end
+        AddBankTab(
+            tabs,
+            seen,
+            bankType,
+            bagID,
+            index,
+            type(data) == "table" and data.numSlots or nil,
+            type(data) == "table" and data.depositFlags or 0,
+            wantWarbank
+        )
+    end
+end
+
+local function FetchBankTabsFromEnums(bankType, tabs, seen)
+    local wantWarbank = bankType == BankTypeValue("Account")
+    for index = 1, BankTabLimit(bankType) do
+        local bagID = BankBagIDForIndex(bankType, index)
+        AddBankTab(tabs, seen, bankType, bagID, index, nil, 0, wantWarbank)
+    end
+end
+
+local function FetchBankTabs(bank, bankType)
+    local tabs, seen = {}, {}
+    FetchBankTabsFromEUI(bank, bankType, tabs, seen)
+    FetchBankTabsFromBankAPI(bankType, tabs, seen)
+    FetchBankTabsFromEnums(bankType, tabs, seen)
+    table.sort(tabs, function(a, b)
+        return (a.index or 0) < (b.index or 0)
+    end)
+    return tabs
+end
+
+local function BankHasCategoryFilters(tabs)
+    for _, tab in ipairs(tabs or {}) do
+        if BitBand(tab.depositFlags or 0, BANK_ROUTE_MASK) ~= 0 then return true end
+    end
+    return false
+end
+
+local function FirstBankTabForRouting(tabs)
+    for _, tab in ipairs(tabs or {}) do
+        local numSlots = tab.numSlots or 0
+        for slot = 1, numSlots do
+            if C_Container and C_Container.GetContainerItemInfo and not C_Container.GetContainerItemInfo(tab.bagID, slot) then
+                return tab.bagID
+            end
+        end
+    end
+    return tabs and tabs[1] and tabs[1].bagID or nil
+end
+
+local function BankIsVisible(bank)
+    return bank and ((bank.IsVisible and bank:IsVisible()) or (bank.IsShown and bank:IsShown()))
+end
+
+local function BankIsWarbandView(bank)
+    if bank and bank.IsWarbandView then
+        local ok, result = pcall(bank.IsWarbandView, bank)
+        if ok then return result and true or false end
+    end
+    return false
+end
+
+local function ActiveBankType(bank)
+    return BankIsWarbandView(bank) and BankTypeValue("Account") or BankTypeValue("Character")
+end
+
+local function SelectedBankTabBagID(bank, bankType)
+    local original = bank and bank._BagPlusOriginalGetSelectedTabBagID
+    if not original then return nil end
+    local ok, bagID = pcall(original, bank)
+    if not ok then return nil end
+    return IsBankTypeBagID(bankType, bagID) and bagID or nil
+end
+
+local function BankItemInfo(item)
+    if not item then return {} end
+    local details = {}
+
+    local function ReadWith(fn)
+        if not fn then return false end
+        local ok, itemName, itemLink, itemQuality, itemLevel, itemMinLevel, itemType, itemSubType,
+              itemStackCount, itemEquipLoc, itemTexture, sellPrice, itemClassID, itemSubClassID,
+              bindType, expansionID, setID, reagent = pcall(fn, item)
+        if not ok or not itemName then return false end
+        details.name = itemName
+        details.link = itemLink or details.link
+        details.quality = itemQuality
+        details.maxStack = itemStackCount
+        details.equipLoc = itemEquipLoc
+        details.classID = itemClassID
+        details.subclassID = itemSubClassID
+        details.bindType = bindType
+        details.expansionID = expansionID
+        details.isCraftingReagent = reagent
+        return true
+    end
+
+    ReadWith(C_Item and C_Item.GetItemInfo)
+    if not details.name then ReadWith(GetItemInfo) end
+
+    local getItemInfoInstant = GetItemInfoInstant or (C_Item and C_Item.GetItemInfoInstant)
+    if getItemInfoInstant then
+        local ok, itemID, itemType, itemSubType, itemEquipLoc, icon, classID, subclassID = pcall(getItemInfoInstant, item)
+        if ok then
+            details.itemID = itemID or details.itemID
+            details.equipLoc = itemEquipLoc or details.equipLoc
+            details.classID = classID or details.classID
+            details.subclassID = subclassID or details.subclassID
+        end
+    end
+
+    details.maxStack = tonumber(details.maxStack) or 1
+    if details.maxStack < 1 then details.maxStack = 1 end
+    return details
+end
+
+local function ItemExpansionRouteFlag(expansionID)
+    expansionID = tonumber(expansionID)
+    local currentExpansion = CurrentExpansionLevel()
+    if not expansionID or not currentExpansion then return 0 end
+    if expansionID >= currentExpansion then return BANK_FLAG_CURRENT_EXPANSION end
+    return BANK_FLAG_LEGACY_EXPANSION
+end
+
+local function IsQuestContainerItem(bag, slot)
+    if not (C_Container and C_Container.GetContainerItemQuestInfo) then return false end
+    local ok, questInfo = pcall(C_Container.GetContainerItemQuestInfo, bag, slot)
+    return ok and questInfo and (questInfo.isQuestItem or questInfo.questID) and true or false
+end
+
+local function IsEquippableBankItem(item, details)
+    local equipLoc = details and details.equipLoc
+    if equipLoc and equipLoc ~= "" then return true end
+    local classID = details and details.classID
+    if classID == IC_ARMOR or classID == IC_WEAPON then return true end
+    if IsEquippableItem then
+        local ok, result = pcall(IsEquippableItem, item)
+        if ok and result then return true end
+    end
+    return false
+end
+
+local function BankItemRouteFlags(bag, slot, info)
+    local itemLink = ContainerItemLink(bag, slot, info)
+    local item = itemLink or (info and info.hyperlink) or (info and info.itemID)
+    local details = BankItemInfo(item)
+    if details.quality == nil and info then details.quality = info.quality end
+    local classID = details.classID
+    local flags = 0
+
+    if IsEquippableBankItem(item, details) then
+        flags = BitBor(flags, BANK_FLAG_EQUIPMENT)
+    end
+    if classID == IC_CONSUMABLE then
+        flags = BitBor(flags, BANK_FLAG_CONSUMABLES)
+    end
+    if classID == IC_TRADEGOODS
+        or classID == IC_REAGENT
+        or classID == IC_GEM
+        or classID == IC_ITEM_ENHANCEMENT
+        or classID == IC_RECIPE
+        or classID == IC_PROFESSION then
+        flags = BitBor(flags, BANK_FLAG_PROFESSION_GOODS)
+    end
+    if details.isCraftingReagent == true or classID == IC_REAGENT then
+        flags = BitBor(flags, BANK_FLAG_REAGENTS)
+    end
+    if classID == IC_QUEST or IsQuestContainerItem(bag, slot) then
+        flags = BitBor(flags, BANK_FLAG_QUEST)
+    end
+    if tonumber(details.quality) == PoorItemQuality() then
+        flags = BitBor(flags, BANK_FLAG_JUNK)
+    end
+
+    flags = BitBor(flags, ItemExpansionRouteFlag(details.expansionID))
+    return flags
+end
+
+local BANK_CLASS_PRIORITY = {
+    { flag = BANK_FLAG_REAGENTS, score = 70 },
+    { flag = BANK_FLAG_JUNK, score = 65 },
+    { flag = BANK_FLAG_EQUIPMENT, score = 60 },
+    { flag = BANK_FLAG_CONSUMABLES, score = 55 },
+    { flag = BANK_FLAG_PROFESSION_GOODS, score = 50 },
+    { flag = BANK_FLAG_QUEST, score = 45 },
+}
+
+local function BankClassMatchScore(tabClassFlags, routeFlags)
+    for _, entry in ipairs(BANK_CLASS_PRIORITY) do
+        if BitBand(tabClassFlags, entry.flag) ~= 0 and BitBand(routeFlags, entry.flag) ~= 0 then
+            return entry.score
+        end
+    end
+    return nil
+end
+
+local function BankTabRouteScore(tab, routeFlags, selectedBagID)
+    local depositFlags = tab.depositFlags or 0
+    local classFlags = BitBand(depositFlags, BANK_CLASS_MASK)
+    local expansionFlags = BitBand(depositFlags, BANK_EXPANSION_MASK)
+
+    if expansionFlags ~= 0 then
+        local itemExpansionFlags = BitBand(routeFlags, BANK_EXPANSION_MASK)
+        if itemExpansionFlags == 0 or BitBand(expansionFlags, itemExpansionFlags) == 0 then
+            return nil
+        end
+    end
+
+    local score
+    if classFlags ~= 0 then
+        score = BankClassMatchScore(classFlags, routeFlags)
+        if not score then return nil end
+        score = 100 + score
+    elseif expansionFlags ~= 0 then
+        score = 40
+    else
+        score = 1
+    end
+
+    if tab.bagID == selectedBagID then score = score + 5 end
+    return score
+end
+
+local function BankRouteCandidates(bank, bankType, tabs, routeFlags)
+    local selectedBagID = SelectedBankTabBagID(bank, bankType)
+    local candidates = {}
+    for _, tab in ipairs(tabs or {}) do
+        local score = BankTabRouteScore(tab, routeFlags, selectedBagID)
+        if score then
+            candidates[#candidates + 1] = {
+                bagID = tab.bagID,
+                index = tab.index or #candidates + 1,
+                numSlots = tab.numSlots,
+                score = score,
+            }
+        end
+    end
+    table.sort(candidates, function(a, b)
+        if a.score ~= b.score then return a.score > b.score end
+        return (a.index or 0) < (b.index or 0)
+    end)
+    return candidates
+end
+
+local function BankAllocationKey(bagID, slot)
+    return (tonumber(bagID) or 0) * 1000 + (tonumber(slot) or 0)
+end
+
+local function IsBankSlotAllocated(bagID, slot)
+    return bankCategoryAllocatedSlots[BankAllocationKey(bagID, slot)] ~= nil
+end
+
+local function AllocateBankSlot(bagID, slot, info)
+    bankCategoryAllocatedSlots[BankAllocationKey(bagID, slot)] = {
+        wasEmpty = info == nil,
+        itemID = info and info.itemID,
+        stackCount = info and tonumber(info.stackCount) or nil,
+    }
+end
+
+local function ClearBankCategoryAllocations()
+    for key, allocation in pairs(bankCategoryAllocatedSlots) do
+        local bagID = math.floor(key / 1000)
+        local slot = key % 1000
+        local info = C_Container and C_Container.GetContainerItemInfo and C_Container.GetContainerItemInfo(bagID, slot)
+        if (allocation.wasEmpty and info)
+            or ((not allocation.wasEmpty) and ((not info) or info.itemID ~= allocation.itemID or tonumber(info.stackCount) ~= allocation.stackCount)) then
+            bankCategoryAllocatedSlots[key] = nil
+        end
+    end
+end
+
+local function BankItemMaxStack(itemID, itemLink)
+    local maxStack
+    if C_Item and C_Item.GetItemMaxStackSizeByID and itemID then
+        local ok, result = pcall(C_Item.GetItemMaxStackSizeByID, itemID)
+        if ok then maxStack = result end
+    end
+    if not maxStack then
+        local _, itemMaxStack = ReadItemDetails(itemLink or itemID)
+        maxStack = itemMaxStack
+    end
+    maxStack = tonumber(maxStack) or 1
+    if maxStack < 1 then maxStack = 1 end
+    return maxStack
+end
+
+local function IsSkippedBankSlot(bagID, slot, skipBag, skipSlot)
+    return skipBag and skipSlot and bagID == skipBag and slot == skipSlot
+end
+
+local function FindBankTransferTarget(candidates, srcItemID, srcItemLink, skipBag, skipSlot)
+    if not (C_Container and C_Container.GetContainerNumSlots and C_Container.GetContainerItemInfo) then
+        return nil, nil
+    end
+
+    local maxStack = BankItemMaxStack(srcItemID, srcItemLink)
+    local srcStackKey = StackKey(srcItemID, srcItemLink)
+
+    if maxStack > 1 then
+        for _, candidate in ipairs(candidates) do
+            local numSlots = candidate.numSlots or C_Container.GetContainerNumSlots(candidate.bagID) or 0
+            for slot = 1, numSlots do
+                if not IsSkippedBankSlot(candidate.bagID, slot, skipBag, skipSlot)
+                    and not IsBankSlotAllocated(candidate.bagID, slot) then
+                    local info = C_Container.GetContainerItemInfo(candidate.bagID, slot)
+                    local link = ContainerItemLink(candidate.bagID, slot, info)
+                    if info and not SlotIsLocked(candidate.bagID, slot, info)
+                        and info.itemID == srcItemID
+                        and StackKey(info.itemID, link) == srcStackKey
+                        and (tonumber(info.stackCount) or 1) < maxStack then
+                        return candidate.bagID, slot
+                    end
+                end
+            end
+        end
+    end
+
+    for _, candidate in ipairs(candidates) do
+        local numSlots = candidate.numSlots or C_Container.GetContainerNumSlots(candidate.bagID) or 0
+        for slot = 1, numSlots do
+            if not IsSkippedBankSlot(candidate.bagID, slot, skipBag, skipSlot)
+                and not IsBankSlotAllocated(candidate.bagID, slot)
+                and not C_Container.GetContainerItemInfo(candidate.bagID, slot) then
+                return candidate.bagID, slot
+            end
+        end
+    end
+
+    return nil, nil
+end
+
+local function IsItemAllowedInBankType(bankType, srcBag, srcSlot)
+    if not (C_Bank and C_Bank.IsItemAllowedInBankType and ItemLocation and ItemLocation.CreateFromBagAndSlot) then
+        return true
+    end
+    local loc = ItemLocation:CreateFromBagAndSlot(srcBag, srcSlot)
+    if not loc then return true end
+
+    local ok, allowed = pcall(C_Bank.IsItemAllowedInBankType, bankType, loc)
+    if ok then return allowed ~= false end
+    ok, allowed = pcall(C_Bank.IsItemAllowedInBankType, loc, bankType)
+    if ok then return allowed ~= false end
+    return true
+end
+
+local function ProcessBankCategoryTransfer(bank, bankType, srcBag, srcSlot)
+    if not BankIsVisible(bank) then return true end
+    if not (bankType and C_Container and C_Container.GetContainerItemInfo and C_Container.PickupContainerItem) then
+        return nil
+    end
+
+    local tabs = FetchBankTabs(bank, bankType)
+    if #tabs == 0 or not BankHasCategoryFilters(tabs) then return nil end
+
+    local info = C_Container.GetContainerItemInfo(srcBag, srcSlot)
+    if not info or not info.itemID then return true end
+    if SlotIsLocked(srcBag, srcSlot, info) then return false end
+    if CursorOccupied() then return true end
+    if not IsItemAllowedInBankType(bankType, srcBag, srcSlot) then return true end
+
+    local srcItemLink = ContainerItemLink(srcBag, srcSlot, info)
+    local routeFlags = BankItemRouteFlags(srcBag, srcSlot, info)
+    local candidates = BankRouteCandidates(bank, bankType, tabs, routeFlags)
+    local targetBag, targetSlot = FindBankTransferTarget(candidates, info.itemID, srcItemLink)
+    if not targetBag or not targetSlot then return true end
+
+    local targetInfo = C_Container.GetContainerItemInfo(targetBag, targetSlot)
+    AllocateBankSlot(targetBag, targetSlot, targetInfo)
+    local moved, reason = PickupIntoSlot(srcBag, srcSlot, targetBag, targetSlot)
+    if moved then return true end
+    bankCategoryAllocatedSlots[BankAllocationKey(targetBag, targetSlot)] = nil
+    if reason == "missing-api" then return nil end
+    return reason == "locked" and false or true
+end
+
+local function BankCategoryQueueIdle()
+    return #bankCategoryTransferQueue == 0 and next(bankCategoryAllocatedSlots) == nil
+end
+
+local function DrainBankCategoryTransfers()
+    ClearBankCategoryAllocations()
+
+    local remaining = {}
+    local bank = _G.EUI_BankFrame
+    local bankType = ActiveBankType(bank)
+    for _, entry in ipairs(bankCategoryTransferQueue) do
+        local handled = ProcessBankCategoryTransfer(bank, bankType, entry.bag, entry.slot)
+        if handled == false then remaining[#remaining + 1] = entry end
+    end
+
+    for index = #bankCategoryTransferQueue, 1, -1 do
+        bankCategoryTransferQueue[index] = nil
+    end
+    for _, entry in ipairs(remaining) do
+        bankCategoryTransferQueue[#bankCategoryTransferQueue + 1] = entry
+    end
+
+    if BankCategoryQueueIdle() and bankCategoryTransferFrame and bankCategoryTransferFrame.UnregisterAllEvents then
+        bankCategoryTransferFrame:UnregisterAllEvents()
+    end
+end
+
+local function EnsureBankCategoryTransferFrame()
+    if bankCategoryTransferFrame then return bankCategoryTransferFrame end
+    if not CreateFrame then return nil end
+    bankCategoryTransferFrame = CreateFrame("Frame")
+    bankCategoryTransferFrame:SetScript("OnEvent", function() DrainBankCategoryTransfers() end)
+    return bankCategoryTransferFrame
+end
+
+local function QueueBankCategoryTransfer(bank, bankType, srcBag, srcSlot)
+    local handled = ProcessBankCategoryTransfer(bank, bankType, srcBag, srcSlot)
+    if handled == nil then return nil end
+
+    local frame = EnsureBankCategoryTransferFrame()
+    if frame and frame.RegisterEvent then frame:RegisterEvent("BAG_UPDATE") end
+    if handled == false then
+        bankCategoryTransferQueue[#bankCategoryTransferQueue + 1] = { bag = srcBag, slot = srcSlot }
+    end
+    return true
+end
+
+local function PatchBankCategoryRouting()
+    if bankCategoryRoutingPatched then return true end
+    local bank = _G.EUI_BankFrame
+    if not (bank and bank.QueueTransfer and bank.GetSelectedTabBagID) then return false end
+
+    bank._BagPlusOriginalQueueTransfer = bank._BagPlusOriginalQueueTransfer or bank.QueueTransfer
+    bank._BagPlusOriginalGetSelectedTabBagID = bank._BagPlusOriginalGetSelectedTabBagID or bank.GetSelectedTabBagID
+
+    bank.GetSelectedTabBagID = function(self, ...)
+        local original = self._BagPlusOriginalGetSelectedTabBagID
+        local ok, bagID = pcall(original, self, ...)
+        if ok and bagID then return bagID end
+
+        local bankType = ActiveBankType(self)
+        local tabs = FetchBankTabs(self, bankType)
+        if not BankHasCategoryFilters(tabs) then return nil end
+        return FirstBankTabForRouting(tabs)
+    end
+
+    bank.QueueTransfer = function(self, srcBag, srcSlot, ...)
+        local handled = QueueBankCategoryTransfer(self, ActiveBankType(self), srcBag, srcSlot)
+        if handled ~= nil then return handled end
+        return self:_BagPlusOriginalQueueTransfer(srcBag, srcSlot, ...)
+    end
+
+    bankCategoryRoutingPatched = true
+    return true
+end
+
+return {
+    TryPatch = PatchBankCategoryRouting,
+}
+end)()
+
 local BAG_SLOT_SIZE = 34
 local BAG_SLOT_SPACING = 4
 local BAG_SECTION_HEADER_H = 22
@@ -1831,6 +2473,170 @@ local function PatchReagentButton()
     return true
 end
 
+local BankWarbankSortButton = (function()
+local bankWarbankSortButtonPatched
+local bankWarbankSortLocked
+local BANK_SORT_BUTTON_ICON = "Interface\\AddOns\\EllesmereUIBags\\Media\\clean-up.png"
+
+local function BankIsVisible(bank)
+    return bank and ((bank.IsVisible and bank:IsVisible()) or (bank.IsShown and bank:IsShown()))
+end
+
+local function FindBankNativeSortButton(header, searchBox)
+    if not (header and header.GetChildren and searchBox) then return nil end
+    local children = { header:GetChildren() }
+    for _, child in ipairs(children) do
+        if child ~= searchBox
+            and child ~= (_G.EUI_BankFrame and EUI_BankFrame._bagPlusWarbankSortBtn)
+            and child.GetObjectType
+            and child:GetObjectType() == "Button"
+            and child.GetPoint then
+            local _, relativeTo, relativePoint = child:GetPoint(1)
+            if relativeTo == searchBox and relativePoint == "LEFT" then
+                return child
+            end
+        end
+    end
+    return nil
+end
+
+local function PositionBankWarbankSortButton()
+    local bank = _G.EUI_BankFrame
+    local btn = bank and bank._bagPlusWarbankSortBtn
+    local searchBox = bank and bank._searchBox
+    local header = searchBox and searchBox.GetParent and searchBox:GetParent()
+    if not (btn and header) then return end
+
+    btn:ClearAllPoints()
+    local nativeSort = FindBankNativeSortButton(header, searchBox)
+    if nativeSort and nativeSort ~= btn and (not nativeSort.IsShown or nativeSort:IsShown()) then
+        btn:SetPoint("RIGHT", nativeSort, "LEFT", -6, 0)
+    elseif searchBox then
+        btn:SetPoint("RIGHT", searchBox, "LEFT", -43, 0)
+    else
+        btn:SetPoint("RIGHT", header, "RIGHT", -234, 0)
+    end
+end
+
+local function StyleBankWarbankSortButtonIcon(btn)
+    if not btn then return end
+    if btn.icon then
+        btn.icon:SetAllPoints()
+        btn.icon:SetTexture(BANK_SORT_BUTTON_ICON)
+        btn.icon:SetAlpha(bankWarbankSortLocked and 0.25 or 0.9)
+        if btn.icon.SetTexCoord then btn.icon:SetTexCoord(0.08, 0.92, 0.08, 0.92) end
+    end
+    if btn.badge then
+        local fontSet
+        if btn.badge.SetFontObject and GameFontNormalSmall then
+            btn.badge:SetFontObject(GameFontNormalSmall)
+            fontSet = true
+        end
+        if btn.badge.SetFont then
+            local font = EllesmereUI and EllesmereUI.GetFontPath and EllesmereUI.GetFontPath()
+            font = font or STANDARD_TEXT_FONT
+            if font then
+                btn.badge:SetFont(font, 6, "OUTLINE")
+                fontSet = true
+            end
+        end
+        if not fontSet then
+            if btn.badge.Hide then btn.badge:Hide() end
+            return
+        end
+        if btn.badge.SetSize then btn.badge:SetSize(24, 8) end
+        if btn.badge.SetJustifyH then btn.badge:SetJustifyH("CENTER") end
+        if btn.badge.SetJustifyV then btn.badge:SetJustifyV("MIDDLE") end
+        if btn.badge.SetShadowColor then btn.badge:SetShadowColor(0, 0, 0, 1) end
+        if btn.badge.SetShadowOffset then btn.badge:SetShadowOffset(1, -1) end
+        btn.badge:SetText("WoW")
+        btn.badge:SetPoint("CENTER", btn, "CENTER", 0, -1)
+        btn.badge:SetTextColor(1, 0.82, 0.16, 1)
+        if btn.badge.Show then btn.badge:Show() end
+    end
+end
+
+local function SetBankWarbankSortLocked(locked)
+    bankWarbankSortLocked = locked and true or nil
+    local btn = _G.EUI_BankFrame and EUI_BankFrame._bagPlusWarbankSortBtn
+    if not btn then return end
+    if btn.EnableMouse then btn:EnableMouse(not bankWarbankSortLocked) end
+    if btn.icon and btn.icon.SetAlpha then
+        btn.icon:SetAlpha(bankWarbankSortLocked and 0.25 or 0.9)
+    end
+end
+
+local function ClickBankWarbankSortButton()
+    if bankWarbankSortLocked then return end
+    if not (C_Container and C_Container.SortBank and Enum and Enum.BankType and Enum.BankType.Account) then return end
+
+    SetBankWarbankSortLocked(true)
+    local p = BagsProfile() or {}
+    if p.bagSortToBottom and C_Container and C_Container.SetSortBagsRightToLeft then
+        C_Container.SetSortBagsRightToLeft(false)
+    end
+    C_Container.SortBank(Enum.BankType.Account)
+
+    if C_Timer and C_Timer.After then
+        C_Timer.After(0.3, function()
+            local bank = _G.EUI_BankFrame
+            if bank and bank.RefreshBank and BankIsVisible(bank) then bank:RefreshBank() end
+        end)
+        C_Timer.After(3, function() SetBankWarbankSortLocked(false) end)
+    else
+        SetBankWarbankSortLocked(false)
+    end
+end
+
+local function PatchBankWarbankSortButton()
+    if bankWarbankSortButtonPatched then
+        PositionBankWarbankSortButton()
+        return true
+    end
+    local bank = _G.EUI_BankFrame
+    local searchBox = bank and bank._searchBox
+    local header = searchBox and searchBox.GetParent and searchBox:GetParent()
+    if not (bank and header and CreateFrame) then return false end
+
+    local btn = bank._bagPlusWarbankSortBtn
+    if not btn then
+        btn = CreateFrame("Button", nil, header)
+        btn:SetSize(24, 24)
+        if btn.SetFrameLevel and header.GetFrameLevel then
+            btn:SetFrameLevel((header:GetFrameLevel() or 1) + 2)
+        end
+        btn.icon = btn:CreateTexture(nil, "OVERLAY")
+        btn.badge = btn:CreateFontString(nil, "OVERLAY")
+        StyleBankWarbankSortButtonIcon(btn)
+        btn:SetScript("OnEnter", function(self)
+            if self.icon and self.icon.SetAlpha and not bankWarbankSortLocked then self.icon:SetAlpha(1) end
+            if EllesmereUI and EllesmereUI.ShowWidgetTooltip then
+                EllesmereUI.ShowWidgetTooltip(self, "Blizzard's Warbank Cleanup")
+            end
+        end)
+        btn:SetScript("OnLeave", function(self)
+            if self.icon and self.icon.SetAlpha then
+                self.icon:SetAlpha(bankWarbankSortLocked and 0.25 or 0.9)
+            end
+            if EllesmereUI and EllesmereUI.HideWidgetTooltip then EllesmereUI.HideWidgetTooltip() end
+        end)
+        btn:SetScript("OnClick", ClickBankWarbankSortButton)
+        bank._bagPlusWarbankSortBtn = btn
+    else
+        StyleBankWarbankSortButtonIcon(btn)
+        btn:SetScript("OnClick", ClickBankWarbankSortButton)
+    end
+
+    PositionBankWarbankSortButton()
+    bankWarbankSortButtonPatched = true
+    return true
+end
+
+return {
+    TryPatch = PatchBankWarbankSortButton,
+}
+end)()
+
 local function EnsureSidebarEntry()
     local EUI = EllesmereUI
     if not EUI then return end
@@ -2005,14 +2811,17 @@ local function TryPatch()
     PatchManager()
     PatchRefresh()
     PatchReagentButton()
+    local bankCategoryReady = BankCategoryRouting and BankCategoryRouting.TryPatch and BankCategoryRouting.TryPatch()
+    local bankSortReady = BankWarbankSortButton and BankWarbankSortButton.TryPatch and BankWarbankSortButton.TryPatch()
     RegisterOptions()
     RefreshGearVisualOrder()
+    return bankCategoryReady, bankSortReady
 end
 
 local retries = 0
 local function RetryPatch()
-    TryPatch()
-    if patched and refreshPatched and reagentButtonPatched then return end
+    local bankCategoryReady, bankSortReady = TryPatch()
+    if patched and refreshPatched and reagentButtonPatched and bankCategoryReady and bankSortReady then return end
     retries = retries + 1
     if retries <= 20 and C_Timer and C_Timer.After then
         C_Timer.After(0.25, RetryPatch)
