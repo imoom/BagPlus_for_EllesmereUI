@@ -143,16 +143,26 @@ local function ItemClassIDs()
     return ic and ic.Armor, ic and ic.Weapon
 end
 
-local function IsGearLink(itemLink)
-    if not itemLink or not GetItemInfoInstant then return false end
+local function GetGearLinkKind(itemLink)
+    if not itemLink or not GetItemInfoInstant then return false, false end
     local armorClass, weaponClass = ItemClassIDs()
-    if not armorClass or not weaponClass then return false end
-    local _, _, _, _, _, classID = GetItemInfoInstant(itemLink)
-    return classID == armorClass or classID == weaponClass
+    if not armorClass or not weaponClass then return false, false end
+    local _, _, _, _, _, classID, subclassID = GetItemInfoInstant(itemLink)
+    local cosmeticSubclass = Enum and Enum.ItemArmorSubclass and Enum.ItemArmorSubclass.Cosmetic
+    local isCosmetic = classID == armorClass and cosmeticSubclass and subclassID == cosmeticSubclass
+    if C_Item and C_Item.IsCosmeticItem and C_Item.IsCosmeticItem(itemLink) then
+        isCosmetic = true
+    end
+    return classID == armorClass or classID == weaponClass or isCosmetic, isCosmetic
+end
+
+local function IsGearLink(itemLink)
+    return GetGearLinkKind(itemLink)
 end
 
 local function GetBindRule(itemLink, itemInfo, bag, slot)
-    if not IsGearLink(itemLink) then return nil end
+    local isGear, isCosmetic = GetGearLinkKind(itemLink)
+    if not isGear then return nil end
     local info = itemInfo
     if not info and bag and slot and C_Container and C_Container.GetContainerItemInfo then
         info = C_Container.GetContainerItemInfo(bag, slot)
@@ -169,10 +179,11 @@ local function GetBindRule(itemLink, itemInfo, bag, slot)
 
     if GetItemInfo and Enum and Enum.ItemBind then
         local _, _, _, _, _, _, _, _, _, _, _, _, _, bindType = GetItemInfo(itemLink)
-        if bindType == Enum.ItemBind.OnEquip then
+        if bindType and (bindType == Enum.ItemBind.OnEquip or bindType == Enum.ItemBind.OnUse) then
             return RULE_BOE
         end
     end
+    if isCosmetic then return RULE_BOE end
     return nil
 end
 
@@ -2722,7 +2733,7 @@ local function RegisterOptions()
                     DB().enabled = AnyRuleEnabled()
                     RebuildBagPlus()
                 end,
-                "Adds a BoE Gear category for unbound Bind-on-Equip armor and weapons."
+                "Adds a BoE Gear category for unbound Bind-on-Equip, Bind-on-Use, and cosmetic gear."
             ); y = y - h
 
             _, h = W:Dropdown(parent, "Gear Sort", y,

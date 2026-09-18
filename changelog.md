@@ -2,6 +2,11 @@
 
 All notable changes to BagPlus for EllesmereUI will be documented in this file.
 
+## 26.7 - 2026-09-19
+
+- Expanded the BoE Gear category to include unbound Bind-on-Use armor and weapons.
+- Added unbound cosmetic gear to the BoE Gear category, including cosmetic appearance items identified by WoW's cosmetic-item API; Soulbound and Warbound cosmetics remain excluded, while Warbound-until-Equipped cosmetics remain in Warbound Gear.
+
 ## 26.6 - 2026-09-03
 
 - Added bank and warbank right-click deposit routing that honors Blizzard's assigned bank tab categories for matching items.

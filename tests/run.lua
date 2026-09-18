@@ -285,7 +285,8 @@ local function resetGlobals()
             Miscellaneous = 15,
             Profession = 19,
         },
-        ItemBind = { OnEquip = 2, Quest = 4 },
+        ItemBind = { OnEquip = 2, OnUse = 3, Quest = 4 },
+        ItemArmorSubclass = { Cosmetic = 5 },
         ItemQuality = { Poor = 0 },
     }
     _G.C_Container = {
@@ -304,6 +305,7 @@ local function resetGlobals()
     }
     _G.C_Item = {
         DoesItemExist = function() return true end,
+        IsCosmeticItem = function() return false end,
         IsBoundToAccountUntilEquip = function() return false end,
         IsLocked = function() return false end,
         GetItemMaxStackSizeByID = function() return 1 end,
@@ -985,21 +987,33 @@ test("initializes defaults and migrates old saved keys", function()
     assertNil(db.maxBagColumns)
 end)
 
-test("adds BagPlus categories and routes BoE and Warbound gear", function()
+test("adds BagPlus categories and routes BoE, bind-on-use, cosmetic, and Warbound gear", function()
     local ctx = setup()
     _G.GetItemInfoInstant = function(link)
         if link == "boe" then return nil, nil, nil, "INVTYPE_CHEST", nil, Enum.ItemClass.Armor end
-        if link == "wue" then return nil, nil, nil, "INVTYPE_CHEST", nil, Enum.ItemClass.Armor end
+        if link == "bou" then return nil, nil, nil, "INVTYPE_TRINKET", nil, Enum.ItemClass.Armor end
+        if link == "item:260898" or link == "bound-cosmetic" then
+            return nil, nil, nil, "", nil, Enum.ItemClass.Weapon, 8
+        end
+        if link == "wue" then
+            return nil, nil, nil, "", nil, Enum.ItemClass.Weapon, 8
+        end
         return nil, nil, nil, nil, nil, nil
     end
     _G.GetItemInfo = function(link)
         if link == "boe" then
             return "BoE", nil, 2, 500, nil, "Armor", nil, nil, nil, nil, nil, nil, nil, Enum.ItemBind.OnEquip
         end
+        if link == "bou" then
+            return "Bind on Use", nil, 2, 500, nil, "Armor", nil, nil, nil, nil, nil, nil, nil, Enum.ItemBind.OnUse
+        end
         return "Item", nil, 1, 1, nil, "Armor", nil, nil, nil, nil, nil, nil, nil, nil
     end
     _G.C_Item.IsBoundToAccountUntilEquip = function(loc)
         return loc and loc.bag == 0 and loc.slot == 2
+    end
+    _G.C_Item.IsCosmeticItem = function(link)
+        return link == "item:260898" or link == "bound-cosmetic" or link == "wue"
     end
 
     loadAddon(ctx)
@@ -1010,6 +1024,10 @@ test("adds BagPlus categories and routes BoE and Warbound gear", function()
     assertTrue(boeIndex, "BoE category should exist")
     assertEqual(ctx.manager:ClassifyItem("wue", 1, 0, 2, { isBound = false }), wueIndex)
     assertEqual(ctx.manager:ClassifyItem("boe", 2, 0, 1, { isBound = false }), boeIndex)
+    assertEqual(ctx.manager:ClassifyItem("bou", 3, 0, 3, { isBound = false }), boeIndex)
+    assertEqual(ctx.manager:ClassifyItem("item:260898", 260898, 0, 4, { isBound = false }), boeIndex)
+    assertTrue(ctx.manager:ClassifyItem("bound-cosmetic", 5, 0, 5, { isBound = true }) ~= boeIndex,
+        "bound cosmetic gear should not route to BoE")
 end)
 
 test("reagent command merges stacks and moves reagents into bag 5 only", function()

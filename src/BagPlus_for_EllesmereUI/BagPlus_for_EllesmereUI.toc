@@ -3,7 +3,7 @@
 ## Category: Inventory
 ## Notes: Extra EllesmereUI bag categories, item-level gear sorting, reagent-bag moves, bank category routing, and warbank cleanup helpers.
 ## Author: Shamongus
-## Version: 26.6
+## Version: 26.7
 ## X-License: MIT
 ## Dependencies: EllesmereUI, EllesmereUIBags
 ## SavedVariables: BagPlusForEllesmereUIDB

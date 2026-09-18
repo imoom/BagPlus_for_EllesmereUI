@@ -2,7 +2,7 @@
 
 BagPlus for EllesmereUI is a small extension addon for EllesmereUI Bags.
 
-This is intended as a temporary solution until BoE, Warbound-until-Equipped, and item-level gear sorting support is added to the ordinary EllesmereUI Bags addon.
+This is intended as a temporary solution until BoE (including Bind-on-Use and unbound cosmetic gear), Warbound-until-Equipped, and item-level gear sorting support is added to the ordinary EllesmereUI Bags addon.
 
 ## Dependencies
 
