@@ -702,6 +702,24 @@ local function buildSharedArmoryGrid(ctx)
     end
 end
 
+local function buildEmptyRecentGrid(ctx)
+    local child = ctx.bags._scrollChild
+    clearChildren(child)
+    child:SetSize(488, 140)
+
+    local recent = makeCategoryHeader(child, "Recent Items (0)", 15, -6, 456)
+    recent._hideBtn = newFrame("Button", recent)
+    recent._hideBtn._dbKey = "bagShowRecentItems"
+    ctx.recentHeader = recent
+    ctx.recentPads = {}
+    for index = 1, 12 do
+        ctx.recentPads[index] = makePad(child, 15 + (index - 1) * 38, -28)
+    end
+
+    ctx.afterRecentHeader = makeCategoryHeader(child, "Armor (1)", 15, -66, 456)
+    ctx.afterRecentSlot = makeSlot(child, 15, -88)
+end
+
 test("loads and registers in a mocked EllesmereUI environment", function()
     local ctx = setup()
     loadAddon(ctx)
@@ -1143,6 +1161,29 @@ test("maximum items per row repacks compact armory slot groups", function()
     assertEqual(thirdY, -84)
     assertEqual(thirdSlotX, 15)
     assertEqual(thirdSlotY, -102)
+end)
+
+test("hide empty recent items recognizes EllesmereUI 9.4 counted headers", function()
+    local ctx
+    ctx = setup({
+        refreshInventory = function() buildEmptyRecentGrid(ctx) end,
+    })
+    loadAddon(ctx)
+
+    ctx.bags._sidebarChild = newFrame("Frame", ctx.bags)
+    local allItems = newFrame("Button", ctx.bags._sidebarChild)
+    allItems._catIdx = 0
+    allItems._indicator = newRegion()
+    allItems._indicator:Show()
+
+    slash("emptyrecent on")
+
+    assertEqual(ctx.recentHeader:IsShown(), false, "empty Recent Items header should be hidden")
+    assertEqual(ctx.recentPads[1]:IsShown(), false, "empty Recent Items pads should be hidden")
+    local _, headerY = pointXY(ctx.afterRecentHeader)
+    local _, slotY = pointXY(ctx.afterRecentSlot)
+    assertEqual(headerY, -6, "following category should move into the hidden section's space")
+    assertEqual(slotY, -28, "following items should move into the hidden section's space")
 end)
 
 local passed = 0

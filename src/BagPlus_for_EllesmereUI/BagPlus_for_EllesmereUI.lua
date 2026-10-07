@@ -1674,7 +1674,20 @@ local function HeaderText(header)
 end
 
 local function IsRecentSection(section)
-    return HeaderText(section and section.header) == L("Recent Items")
+    local header = section and section.header
+    if not header then return false end
+
+    -- EllesmereUI marks this special header with its settings key. Prefer the
+    -- marker because 9.4 appends the live item count to the visible label.
+    if header._hideBtn and header._hideBtn._dbKey == "bagShowRecentItems" then
+        return true
+    end
+
+    local text = HeaderText(header)
+    local recent = L("Recent Items")
+    if text == recent then return true end
+    if text:sub(1, #recent) ~= recent then return false end
+    return text:sub(#recent + 1):match("^%s*%(%d+%)%s*$") ~= nil
 end
 
 local function ShouldHideEmptyRecentSection(section)

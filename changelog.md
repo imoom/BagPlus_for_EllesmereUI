@@ -2,6 +2,10 @@
 
 All notable changes to BagPlus for EllesmereUI will be documented in this file.
 
+## 26.9 - 2026-10-07
+
+- Fixed Hide Empty Recent Items with EllesmereUI 9.4's new counted category header labels.
+
 ## 26.8 - 2026-10-07
 
 - Fixed compatibility with EllesmereUI 9.4 after its category classifier began passing item quality as the fifth `ClassifyItem` argument. BagPlus now distinguishes that numeric quality value from container item information, preventing errors while classifying gear into BoE and Warbound categories.
