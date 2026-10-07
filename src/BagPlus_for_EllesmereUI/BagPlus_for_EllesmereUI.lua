@@ -163,7 +163,9 @@ end
 local function GetBindRule(itemLink, itemInfo, bag, slot)
     local isGear, isCosmetic = GetGearLinkKind(itemLink)
     if not isGear then return nil end
-    local info = itemInfo
+    -- EllesmereUI 9.4 passes item quality as ClassifyItem's fifth argument.
+    -- Older BagPlus callers/tests may still provide the container info table.
+    local info = type(itemInfo) == "table" and itemInfo or nil
     if not info and bag and slot and C_Container and C_Container.GetContainerItemInfo then
         info = C_Container.GetContainerItemInfo(bag, slot)
     end
@@ -2347,8 +2349,8 @@ local function PatchManager()
         return cats
     end
 
-    function manager:ClassifyItem(itemLink, itemID, bag, slot, itemInfo, ...)
-        local idx = self:_BagPlusOriginalClassifyItem(itemLink, itemID, bag, slot, itemInfo, ...)
+    function manager:ClassifyItem(itemLink, itemID, bag, slot, qualityOrItemInfo, ...)
+        local idx = self:_BagPlusOriginalClassifyItem(itemLink, itemID, bag, slot, qualityOrItemInfo, ...)
 
         local cats = self:GetCategories()
         local originalCat = idx and cats[idx]
@@ -2360,7 +2362,7 @@ local function PatchManager()
         if IsProtectedOriginalCategory(originalCat) and not IsOriginalGearBucket(originalCat) then return idx end
         if originalCat and not IsOriginalGearBucket(originalCat) and not originalCat.bindRule then return idx end
 
-        local rule = GetBindRule(itemLink, itemInfo, bag, slot)
+        local rule = GetBindRule(itemLink, qualityOrItemInfo, bag, slot)
         if not rule or not IsRuleEnabled(rule) then return idx end
         local ruleIdx = FindRuleCategory(cats, rule)
         return ruleIdx or idx

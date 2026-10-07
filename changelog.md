@@ -2,6 +2,10 @@
 
 All notable changes to BagPlus for EllesmereUI will be documented in this file.
 
+## 26.8 - 2026-10-07
+
+- Fixed compatibility with EllesmereUI 9.4 after its category classifier began passing item quality as the fifth `ClassifyItem` argument. BagPlus now distinguishes that numeric quality value from container item information, preventing errors while classifying gear into BoE and Warbound categories.
+
 ## 26.7 - 2026-09-19
 
 - Expanded the BoE Gear category to include unbound Bind-on-Use armor and weapons.

@@ -1024,6 +1024,8 @@ test("adds BagPlus categories and routes BoE, bind-on-use, cosmetic, and Warboun
     assertTrue(boeIndex, "BoE category should exist")
     assertEqual(ctx.manager:ClassifyItem("wue", 1, 0, 2, { isBound = false }), wueIndex)
     assertEqual(ctx.manager:ClassifyItem("boe", 2, 0, 1, { isBound = false }), boeIndex)
+    assertEqual(ctx.manager:ClassifyItem("boe", 2, 0, 1, 4), boeIndex,
+        "EllesmereUI 9.4 item quality argument should not be treated as container info")
     assertEqual(ctx.manager:ClassifyItem("bou", 3, 0, 3, { isBound = false }), boeIndex)
     assertEqual(ctx.manager:ClassifyItem("item:260898", 260898, 0, 4, { isBound = false }), boeIndex)
     assertTrue(ctx.manager:ClassifyItem("bound-cosmetic", 5, 0, 5, { isBound = true }) ~= boeIndex,
