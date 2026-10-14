@@ -2,6 +2,10 @@
 
 All notable changes to BagPlus for EllesmereUI will be documented in this file.
 
+## 26.10 - 2026-10-14
+
+- Update .toc for the new 12.1.5 release.
+
 ## 26.9 - 2026-10-07
 
 - Fixed Hide Empty Recent Items with EllesmereUI 9.4's new counted category header labels.
