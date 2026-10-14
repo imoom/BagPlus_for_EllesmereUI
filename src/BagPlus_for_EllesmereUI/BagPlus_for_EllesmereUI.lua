@@ -143,11 +143,23 @@ local function ItemClassIDs()
     return ic and ic.Armor, ic and ic.Weapon
 end
 
+-- Retail exposes item queries through C_Item; retain the globals as a fallback
+-- for older clients. Resolve at call time so startup order does not matter.
+local function ItemInfo(item)
+    local query = C_Item and C_Item.GetItemInfo or GetItemInfo
+    if query then return query(item) end
+end
+
+local function ItemInfoInstant(item)
+    local query = C_Item and C_Item.GetItemInfoInstant or GetItemInfoInstant
+    if query then return query(item) end
+end
+
 local function GetGearLinkKind(itemLink)
-    if not itemLink or not GetItemInfoInstant then return false, false end
+    if not itemLink then return false, false end
     local armorClass, weaponClass = ItemClassIDs()
     if not armorClass or not weaponClass then return false, false end
-    local _, _, _, _, _, classID, subclassID = GetItemInfoInstant(itemLink)
+    local _, _, _, _, _, classID, subclassID = ItemInfoInstant(itemLink)
     local cosmeticSubclass = Enum and Enum.ItemArmorSubclass and Enum.ItemArmorSubclass.Cosmetic
     local isCosmetic = classID == armorClass and cosmeticSubclass and subclassID == cosmeticSubclass
     if C_Item and C_Item.IsCosmeticItem and C_Item.IsCosmeticItem(itemLink) then
@@ -179,8 +191,8 @@ local function GetBindRule(itemLink, itemInfo, bag, slot)
         end
     end
 
-    if GetItemInfo and Enum and Enum.ItemBind then
-        local _, _, _, _, _, _, _, _, _, _, _, _, _, bindType = GetItemInfo(itemLink)
+    if Enum and Enum.ItemBind then
+        local _, _, _, _, _, _, _, _, _, _, _, _, _, bindType = ItemInfo(itemLink)
         if bindType and (bindType == Enum.ItemBind.OnEquip or bindType == Enum.ItemBind.OnUse) then
             return RULE_BOE
         end
@@ -345,9 +357,9 @@ local function IsOriginalGearBucket(cat)
 end
 
 local function FindFallbackGearBucket(cats, itemLink)
-    if not (cats and itemLink and GetItemInfoInstant) then return nil end
+    if not (cats and itemLink) then return nil end
     local armorClass, weaponClass = ItemClassIDs()
-    local _, _, _, equipSlot, _, classID = GetItemInfoInstant(itemLink)
+    local _, _, _, equipSlot, _, classID = ItemInfoInstant(itemLink)
     local target
     if classID == weaponClass or equipSlot == "INVTYPE_TRINKET" then
         target = "Weapons / Trinkets"
@@ -366,7 +378,7 @@ local function StampGearSortFields(items)
     local mode = SortMode()
     for _, data in ipairs(items) do
         if data.itemLink and IsGearLink(data.itemLink) then
-            local name, _, quality, ilvl, _, itemType = GetItemInfo(data.itemLink)
+            local name, _, quality, ilvl, _, itemType = ItemInfo(data.itemLink)
             local rawIlvl = ilvl or 0
             data._sortName = name or ""
             data._sortQuality = quality or 0
@@ -375,7 +387,7 @@ local function StampGearSortFields(items)
             data._sortTrackRank = mode == "off" and 0 or 1
             data._sortGear = mode ~= "off"
             data._bagPlusIlvl = rawIlvl
-            data._sortCached = true
+            data._sortCached = name ~= nil
         end
     end
 end
@@ -572,8 +584,8 @@ local function ReadItemDetails(item)
         isCraftingReagent = reagent
     end
 
-    if not classID and GetItemInfoInstant then
-        local itemID, itemType, itemSubType, itemEquipLoc, icon, instantClassID = GetItemInfoInstant(item)
+    if not classID then
+        local itemID, itemType, itemSubType, itemEquipLoc, icon, instantClassID = ItemInfoInstant(item)
         classID = instantClassID
     end
 

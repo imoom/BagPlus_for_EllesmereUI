@@ -2,6 +2,11 @@
 
 All notable changes to BagPlus for EllesmereUI will be documented in this file.
 
+## 26.11 - 2026-10-14
+
+- Fixed BoE and Warbound Gear categorization and gear sort modes on clients exposing item queries through `C_Item` instead of the legacy global functions.
+- Kept compatibility with older item-query globals and allowed uncached gear data to be retried.
+
 ## 26.10 - 2026-10-14
 
 - Update .toc for the new 12.1.5 release.

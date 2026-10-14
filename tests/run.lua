@@ -1050,6 +1050,142 @@ test("adds BagPlus categories and routes BoE, bind-on-use, cosmetic, and Warboun
         "bound cosmetic gear should not route to BoE")
 end)
 
+test("routes gear with C_Item APIs when legacy item globals are absent", function()
+    local ctx = setup()
+    installInventory({ [0] = {
+        size = 4,
+        [1] = bagItem(1), [2] = bagItem(2), [3] = bagItem(3), [4] = bagItem(4),
+    } }, {
+        ["item:1"] = { name = "BoE", classID = Enum.ItemClass.Armor, bindType = Enum.ItemBind.OnEquip },
+        ["item:2"] = { name = "Warbound", classID = Enum.ItemClass.Weapon },
+        ["item:3"] = { name = "Bind on Use", classID = Enum.ItemClass.Armor, bindType = Enum.ItemBind.OnUse },
+        ["item:4"] = { name = "Cosmetic", classID = Enum.ItemClass.Armor, subclassID = Enum.ItemArmorSubclass.Cosmetic },
+    })
+    C_Item.GetItemInfoInstant = GetItemInfoInstant
+    GetItemInfoInstant = nil
+    GetItemInfo = nil
+    C_Item.IsBoundToAccountUntilEquip = function(loc) return loc.slot == 2 end
+    function ctx.manager:ClassifyItem(link)
+        return findCategory(self, link == "item:2" and "Weapons / Trinkets" or "Armor")
+    end
+    loadAddon(ctx)
+
+    local boe = findCategory(ctx.manager, "BoE Gear")
+    local wue = findCategory(ctx.manager, "Warbound Gear")
+    assertEqual(ctx.manager:ClassifyItem("item:1", 1, 0, 1, 2), boe)
+    -- Prefer the namespaced queries even when old globals are still present.
+    GetItemInfo = function() error("legacy item query should not be called") end
+    GetItemInfoInstant = function() error("legacy instant query should not be called") end
+    assertEqual(ctx.manager:ClassifyItem("item:2", 2, 0, 2, 2), wue)
+    assertEqual(ctx.manager:ClassifyItem("item:3", 3, 0, 3, 2), boe)
+    assertEqual(ctx.manager:ClassifyItem("item:4", 4, 0, 4, 2), boe)
+    assertEqual(ctx.manager:ClassifyItem("item:1", 1, 0, 1, { isBound = true }),
+        findCategory(ctx.manager, "Armor"), "bound gear should retain the native category")
+
+    EllesmereUIDB.bagItemAssignments = { [1] = "Armor" }
+    assertEqual(ctx.manager:ClassifyItem("item:1", 1, 0, 1, 2), findCategory(ctx.manager, "Armor"))
+    EllesmereUIDB.bagItemAssignments = nil
+    -- A native classifier may return a bind-rule category even after its toggle
+    -- changes. BagPlus must still recover the matching ordinary gear bucket.
+    ctx.manager._categories[#ctx.manager._categories + 1] = {
+        _defaultName = "Native BoE", bindRule = "bindOnEquip",
+    }
+    ctx.manager._BagPlusOriginalClassifyItem = function(self) return findCategory(self, "Native BoE") end
+    BagPlusForEllesmereUIDB.boeEnabled = false
+    assertEqual(ctx.manager:ClassifyItem("item:1", 1, 0, 1, 2), findCategory(ctx.manager, "Armor"))
+end)
+
+for _, apiMode in ipairs({ "C_Item only", "legacy globals only" }) do
+    test("gear sort switches highest, lowest, and off with " .. apiMode, function()
+        local ctx = setup()
+        installInventory({ [0] = {
+            size = 3, [1] = bagItem(1), [2] = bagItem(2), [3] = bagItem(3),
+        } }, {
+            ["item:1"] = { name = "Alpha", ilvl = 500, quality = 2, classID = Enum.ItemClass.Armor },
+            ["item:2"] = { name = "Bravo", ilvl = 400, quality = 4, classID = Enum.ItemClass.Armor },
+            ["item:3"] = { name = "Charlie", ilvl = 600, quality = 3, classID = Enum.ItemClass.Armor },
+        })
+        if apiMode == "C_Item only" then
+            C_Item.GetItemInfoInstant = GetItemInfoInstant
+            GetItemInfoInstant = nil
+            GetItemInfo = nil
+        else
+            C_Item.GetItemInfo = nil
+        end
+        function ctx.manager:ClassifyItem() return findCategory(self, "Armor") end
+        function ctx.manager:ClassifyAll(items)
+            for _, data in ipairs(items) do
+                data.categoryIndex = self:ClassifyItem(data.itemLink, data.info.itemID, data.bag, data.slot)
+            end
+            return {}, #items
+        end
+        -- Exercise a merged gear group as well as its individual category.
+        ctx.profile.bagCategoryState.Armor = { groupName = "Gear" }
+        ctx.profile.bagCategoryState["Weapons / Trinkets"] = { groupName = "Gear" }
+        for _, cat in ipairs(ctx.manager._categories) do
+            if cat._defaultName == "Armor" or cat._defaultName == "Weapons / Trinkets" then
+                cat.groupName = "Gear"
+            end
+        end
+        function ctx.manager:GetGroupMembers(groupName)
+            local members = {}
+            for i, cat in ipairs(self:GetCategories()) do
+                if cat.groupName == groupName then members[#members + 1] = i end
+            end
+            return members
+        end
+        -- Model EllesmereUI's rendering comparator: track and level for gear,
+        -- then quality/name. The same data tables are reused across mode changes.
+        local rendered = {}
+        for slot = 1, 3 do
+            rendered[slot] = { bag = 0, slot = slot, itemLink = "item:" .. slot,
+                info = C_Container.GetContainerItemInfo(0, slot) }
+        end
+        local function nativeCompare(a, b)
+            if a._sortGear and b._sortGear then
+                if a._sortTrackRank ~= b._sortTrackRank then return a._sortTrackRank > b._sortTrackRank end
+                if a._sortTrackRank > 0 and b._sortTrackRank > 0 and a._sortIlvl ~= b._sortIlvl then
+                    return a._sortIlvl > b._sortIlvl
+                end
+            end
+            if a._sortQuality ~= b._sortQuality then return a._sortQuality > b._sortQuality end
+            return a._sortName < b._sortName
+        end
+        loadAddon(ctx)
+        local armor = findCategory(ctx.manager, "Armor")
+        local function checkMode(mode, expected)
+            slash("ilvl " .. mode)
+            ctx.manager:ClassifyAll(rendered)
+            table.sort(rendered, nativeCompare)
+            for i, id in ipairs(expected) do
+                assertEqual(rendered[i].info.itemID, id, "rendered order in " .. mode)
+                if mode ~= "off" then
+                    assertEqual(ctx.profile.bagVisualOrder[armor][i], id, "saved category order in " .. mode)
+                    assertEqual(ctx.profile.bagVisualOrder.Gear[i], id, "saved group order in " .. mode)
+                end
+            end
+            if mode == "off" then
+                assertNil(ctx.profile.bagVisualOrder[armor], "off must clear saved gear order")
+                assertNil(ctx.profile.bagVisualOrder.Gear, "off must clear saved group order")
+                for _, data in ipairs(rendered) do assertEqual(data._sortGear, false) end
+            end
+        end
+        checkMode("desc", { 3, 1, 2 })
+        checkMode("asc", { 2, 1, 3 })
+        checkMode("off", { 2, 3, 1 })
+        checkMode("desc", { 3, 1, 2 })
+        -- Missing item data must remain eligible for EllesmereUI's cache retry.
+        local query = apiMode == "C_Item only" and C_Item.GetItemInfo or GetItemInfo
+        if apiMode == "C_Item only" then C_Item.GetItemInfo = function() end
+        else GetItemInfo = function() end end
+        ctx.manager:ClassifyAll(rendered)
+        assertEqual(rendered[1]._sortCached, false)
+        if apiMode == "C_Item only" then C_Item.GetItemInfo = query
+        else GetItemInfo = query end
+        checkMode("asc", { 2, 1, 3 })
+    end)
+end
+
 test("reagent command merges stacks and moves reagents into bag 5 only", function()
     local ctx = setup()
     local layout = installInventory({
