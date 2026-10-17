@@ -237,6 +237,8 @@ end
 
 local function resetGlobals()
     _G.BagPlusForEllesmereUIDB = nil
+    _G.EUI_CLIENT_BLOCKED = nil
+    _G.EUI_CLIENT_FOREVER = nil
     _G.EllesmereUIDB = {}
     _G.EllesmereUI = nil
     _G.EUI_CategoryManager = nil
@@ -348,6 +350,7 @@ local function setup(options)
         bagVisualOrder = {},
     }
     _G.EllesmereUI = {
+        IS_FOREVER = options.forever == true,
         _bagsDB = { profile = profile },
         ADDON_ROSTER = {},
         ADDON_GROUPS = {},
@@ -1095,9 +1098,9 @@ test("routes gear with C_Item APIs when legacy item globals are absent", functio
     assertEqual(ctx.manager:ClassifyItem("item:1", 1, 0, 1, 2), findCategory(ctx.manager, "Armor"))
 end)
 
-for _, apiMode in ipairs({ "C_Item only", "legacy globals only" }) do
+for _, apiMode in ipairs({ "C_Item only", "legacy globals only", "Forever C_Item only" }) do
     test("gear sort switches highest, lowest, and off with " .. apiMode, function()
-        local ctx = setup()
+        local ctx = setup({ forever = apiMode == "Forever C_Item only" })
         installInventory({ [0] = {
             size = 3, [1] = bagItem(1), [2] = bagItem(2), [3] = bagItem(3),
         } }, {
@@ -1105,7 +1108,7 @@ for _, apiMode in ipairs({ "C_Item only", "legacy globals only" }) do
             ["item:2"] = { name = "Bravo", ilvl = 400, quality = 4, classID = Enum.ItemClass.Armor },
             ["item:3"] = { name = "Charlie", ilvl = 600, quality = 3, classID = Enum.ItemClass.Armor },
         })
-        if apiMode == "C_Item only" then
+        if apiMode ~= "legacy globals only" then
             C_Item.GetItemInfoInstant = GetItemInfoInstant
             GetItemInfoInstant = nil
             GetItemInfo = nil
@@ -1175,12 +1178,12 @@ for _, apiMode in ipairs({ "C_Item only", "legacy globals only" }) do
         checkMode("off", { 2, 3, 1 })
         checkMode("desc", { 3, 1, 2 })
         -- Missing item data must remain eligible for EllesmereUI's cache retry.
-        local query = apiMode == "C_Item only" and C_Item.GetItemInfo or GetItemInfo
-        if apiMode == "C_Item only" then C_Item.GetItemInfo = function() end
+        local query = apiMode ~= "legacy globals only" and C_Item.GetItemInfo or GetItemInfo
+        if apiMode ~= "legacy globals only" then C_Item.GetItemInfo = function() end
         else GetItemInfo = function() end end
         ctx.manager:ClassifyAll(rendered)
         assertEqual(rendered[1]._sortCached, false)
-        if apiMode == "C_Item only" then C_Item.GetItemInfo = query
+        if apiMode ~= "legacy globals only" then C_Item.GetItemInfo = query
         else GetItemInfo = query end
         checkMode("asc", { 2, 1, 3 })
     end)
@@ -1321,6 +1324,146 @@ test("hide empty recent items recognizes EllesmereUI 9.4 counted headers", funct
     assertEqual(headerY, -6, "following category should move into the hidden section's space")
     assertEqual(slotY, -28, "following items should move into the hidden section's space")
 end)
+
+
+test("Forever offers BoE without retail-only controls or transfers", function()
+    local ctx = setup({ forever = true })
+    local originalTransfer = ctx.bank.QueueTransfer
+    local originalTab = ctx.bank.GetSelectedTabBagID
+    C_Item.IsBoundToAccountUntilEquip = nil
+    C_Bank = nil
+    Enum.BankType.Account = nil
+    C_Container.PickupContainerItem = function() error("must not move items") end
+    loadAddon(ctx)
+    assertTrue(findCategory(ctx.manager, "BoE Gear"))
+    assertNil(findCategory(ctx.manager, "Warbound Gear"))
+    assertNil(ctx.bags._bagPlusReagentBtn)
+    assertNil(ctx.bank._bagPlusWarbankSortBtn)
+    assertEqual(ctx.bank.QueueTransfer, originalTransfer)
+    assertEqual(ctx.bank.GetSelectedTabBagID, originalTab)
+    local labels = {}
+    local widgets = EllesmereUI.Widgets
+    for _, method in ipairs({ "SectionHeader", "Toggle", "Dropdown", "Button", "Slider" }) do
+        widgets[method] = function(_, _, label) labels[label] = true; return nil, 20 end
+    end
+    ctx.registeredModules[ADDON_NAME].buildPage("BagPlus", {}, 0)
+    assertTrue(labels["BoE Gear Category"])
+    assertNil(labels["Warbound Gear Category"])
+    slash("reagents")
+    assertTrue(ctx.prints[#ctx.prints]:find("not supported", 1, true))
+    slash("wue on")
+    assertTrue(ctx.prints[#ctx.prints]:find("not supported", 1, true))
+    slash("boe off")
+    assertNil(findCategory(ctx.manager, "BoE Gear"))
+    assertEqual(BagPlusForEllesmereUIDB.enabled, false)
+end)
+
+test("Forever preserves specialty bags and excludes bank bag 5 from visual ordering", function()
+    local ctx = setup({ forever = true })
+    installInventory({
+        [0] = { size = 1, [1] = bagItem(1) },
+        [1] = { size = 1, [1] = bagItem(2) },
+        [5] = { size = 1, [1] = bagItem(3) },
+    }, {
+        ["item:1"] = { name = "BoE", classID = Enum.ItemClass.Armor, bindType = Enum.ItemBind.OnEquip, ilvl = 25 },
+        ["item:2"] = { name = "Special", classID = Enum.ItemClass.Armor, bindType = Enum.ItemBind.OnEquip, ilvl = 50 },
+        ["item:3"] = { name = "Bank", classID = Enum.ItemClass.Armor, ilvl = 60 },
+    })
+    local family = 1
+    C_Container.GetContainerNumFreeSlots = function(bag) return 0, bag == 1 and family or 0 end
+    ctx.manager._categories[#ctx.manager._categories + 1] = {
+        _defaultName = "Special Bags", name = "Special Bags", isSpecialBag = true,
+    }
+    local scanned = {}
+    function ctx.manager:ClassifyAll(items)
+        for _, data in ipairs(items) do
+            scanned[data.bag] = true
+            data.categoryIndex = self:ClassifyItem(data.itemLink, data.info.itemID, data.bag, data.slot)
+        end
+        return {}, #items
+    end
+    loadAddon(ctx)
+    assertTrue(scanned[0])
+    assertNil(scanned[1])
+    assertNil(scanned[5])
+    assertEqual(ctx.manager:ClassifyItem("item:2", 2, 1, 1, 2), findCategory(ctx.manager, "Special Bags"))
+    assertEqual(ctx.manager:ClassifyItem("item:1", 1, 0, 1, 2), findCategory(ctx.manager, "BoE Gear"))
+    local special = { bag = 1, slot = 1, itemLink = "item:2", info = { itemID = 2 }, _sortName = "native" }
+    ctx.manager:ClassifyAll({ special })
+    assertEqual(special._sortName, "native")
+    assertNil(special._bagPlusIlvl)
+    family = 0 -- swapping to a general-purpose bag takes effect without reload
+    assertEqual(ctx.manager:ClassifyItem("item:2", 2, 1, 1, 2), findCategory(ctx.manager, "BoE Gear"))
+end)
+
+test("Forever grid row limit works and leaves native List and Compact layouts alone", function()
+    local ctx
+    ctx = setup({ forever = true, refreshInventory = function() buildSimpleGrid(ctx) end })
+    loadAddon(ctx)
+    slash("perrow 5")
+    local x, y = pointXY(ctx.simpleSlots[6])
+    assertEqual(x, 15)
+    assertEqual(y, -66)
+    for _, mode in ipairs({ "IsListMode", "IsCompactMode" }) do
+        ctx.bags[mode] = function() return true end
+        ctx.bags:RefreshInventory()
+        local nativeX, nativeY = pointXY(ctx.simpleSlots[6])
+        assertEqual(nativeX, 205)
+        assertEqual(nativeY, -28)
+        ctx.bags[mode] = nil
+    end
+end)
+
+test("blocked EllesmereUI client leaves saved variables and hooks untouched", function()
+    local ctx = setup()
+    EUI_CLIENT_BLOCKED = true
+    local original = ctx.manager.ClassifyItem
+    assert(loadfile(ADDON_PATH))(ADDON_NAME)
+    assertNil(BagPlusForEllesmereUIDB)
+    assertNil(SlashCmdList.BAGPLUSFORELLESMEREUI)
+    assertEqual(ctx.manager.ClassifyItem, original)
+end)
+
+
+-- Use the checked-out upstream classifier when the compatibility submodule is
+-- initialized, in addition to the small mocks used by the core test suite.
+local upstreamCategories = "EllesmereUI/EllesmereUIBags/EllesmereUIBags_Categories.lua"
+local upstreamFile = io.open(upstreamCategories, "r")
+if upstreamFile then
+    upstreamFile:close()
+    test("Forever works with the checked-out EllesmereUI category implementation", function()
+        local ctx = setup({ forever = true })
+        EUI_CLIENT_FOREVER = true
+        EllesmereUI.Lite = { IsDBReady = function() return true end }
+        _G.wipe = function(t) for k in pairs(t) do t[k] = nil end; return t end
+        _G.C_EquipmentSet = { GetEquipmentSetIDs = function() return {} end }
+        installInventory({ [0] = { size = 1, [1] = bagItem(1) }, [1] = { size = 1, [1] = bagItem(2) } }, {
+            ["item:1"] = { name = "BoE", classID = Enum.ItemClass.Armor, bindType = Enum.ItemBind.OnEquip, ilvl = 20 },
+            ["item:2"] = { name = "Special", classID = Enum.ItemClass.Armor, bindType = Enum.ItemBind.OnEquip, ilvl = 30 },
+        })
+        C_Item.GetItemInfoInstant = GetItemInfoInstant
+        C_Container.GetContainerNumFreeSlots = function(bag) return 0, bag == 1 and 1 or 0 end
+        EUI_CategoryManager = nil
+        assert(loadfile(upstreamCategories))("EllesmereUIBags", {
+            SpecialBags = function() return { [1] = true } end,
+        })
+        ctx.manager = EUI_CategoryManager
+        loadAddon(ctx)
+        local items = {
+            { bag = 0, slot = 1, itemLink = "item:1", info = { itemID = 1 } },
+            { bag = 1, slot = 1, itemLink = "item:2", info = { itemID = 2 } },
+        }
+        local counts, total = ctx.manager:ClassifyAll(items)
+        local boe = findCategory(ctx.manager, "BoE Gear")
+        local special = findCategory(ctx.manager, "Special Bags")
+        assertEqual(items[1].categoryIndex, boe)
+        assertEqual(items[2].categoryIndex, special)
+        assertEqual(counts[boe], 1)
+        assertEqual(counts[special], 1)
+        assertEqual(total, 2)
+        assertNil(findCategory(ctx.manager, "Warbound Gear"))
+    end)
+end
 
 local passed = 0
 for _, entry in ipairs(tests) do

@@ -7,7 +7,7 @@ ADDON_LUA="${ROOT_DIR}/src/BagPlus_for_EllesmereUI/BagPlus_for_EllesmereUI.lua"
 
 cd "$ROOT_DIR"
 
-bash -n scripts/release.sh scripts/test.sh
+bash -n scripts/release.sh scripts/test.sh scripts/install-dev.sh
 
 if command -v luac >/dev/null 2>&1; then
     luac -p "$ADDON_LUA"

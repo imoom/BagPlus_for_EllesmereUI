@@ -1,5 +1,7 @@
 -- SPDX-License-Identifier: MIT
 
+if EUI_CLIENT_BLOCKED then return end
+
 local ADDON_NAME = ...
 
 local TITLE = "BagPlus for EllesmereUI"
@@ -48,6 +50,19 @@ local REAGENT_MOVE_RETRY_LIMIT = 80
 local REAGENT_BUTTON_ICON = 3622222
 local REAGENT_BUTTON_MASK = "Interface\\AddOns\\EllesmereUI\\media\\portraits\\circle_mask.tga"
 
+local function IsForever()
+    return (EllesmereUI and EllesmereUI.IS_FOREVER == true) or EUI_CLIENT_FOREVER == true
+end
+
+-- Match EllesmereUI's SpecialBags family check. Resolve at call time because
+-- equipped bags can change without a reload; bank bag IDs are never included.
+local function IsSpecialBag(bag)
+    if not IsForever() or not bag or bag < 1 or bag > 4 then return false end
+    if not (C_Container and C_Container.GetContainerNumFreeSlots) then return false end
+    local _, family = C_Container.GetContainerNumFreeSlots(bag)
+    return family ~= nil and family ~= 0
+end
+
 local function DB()
     if type(BagPlusForEllesmereUIDB) ~= "table" then
         BagPlusForEllesmereUIDB = {}
@@ -80,14 +95,14 @@ end
 
 local function IsRuleEnabled(rule)
     local db = DB()
-    if rule == RULE_WUE then return db.wueEnabled ~= false end
+    if rule == RULE_WUE then return not IsForever() and db.wueEnabled ~= false end
     if rule == RULE_BOE then return db.boeEnabled ~= false end
     return true
 end
 
 local function AnyRuleEnabled()
     local db = DB()
-    return db.wueEnabled ~= false or db.boeEnabled ~= false
+    return IsRuleEnabled(RULE_WUE) or db.boeEnabled ~= false
 end
 
 local function SortMode()
@@ -183,7 +198,7 @@ local function GetBindRule(itemLink, itemInfo, bag, slot)
     end
     if info and info.isBound then return nil end
 
-    if bag and slot and C_Item and C_Item.IsBoundToAccountUntilEquip and ItemLocation then
+    if not IsForever() and bag and slot and C_Item and C_Item.IsBoundToAccountUntilEquip and ItemLocation then
         local loc = ItemLocation:CreateFromBagAndSlot(bag, slot)
         if loc and (not C_Item.DoesItemExist or C_Item.DoesItemExist(loc))
            and C_Item.IsBoundToAccountUntilEquip(loc) then
@@ -216,7 +231,7 @@ local function NewManagedCategory(def, seenInOrder)
         _defaultName = def.key,
         name = (state and state.rename) or L(def.name),
         types = {},
-        icon = def.icon,
+        icon = IsForever() and "Interface\\Icons\\INV_Misc_Bag_08" or def.icon,
         bindRule = def.rule,
         groupName = state and state.groupName,
         groupNameCustom = state and state.groupNameCustom,
@@ -347,7 +362,7 @@ end
 local function IsProtectedOriginalCategory(cat)
     if not cat then return false end
     if cat.bindRule then return true end
-    if cat.isReagentBag or cat.isSetGear or cat.isEquipSet then return true end
+    if cat.isReagentBag or cat.isSpecialBag or cat.isPinned or cat.isRecent or cat.isSetGear or cat.isEquipSet then return true end
     if cat._defaultName == "Quest Items" then return true end
     return false
 end
@@ -377,7 +392,7 @@ local function StampGearSortFields(items)
     if type(items) ~= "table" then return end
     local mode = SortMode()
     for _, data in ipairs(items) do
-        if data.itemLink and IsGearLink(data.itemLink) then
+        if data.itemLink and not IsSpecialBag(data.bag) and IsGearLink(data.itemLink) then
             local name, _, quality, ilvl, _, itemType = ItemInfo(data.itemLink)
             local rawIlvl = ilvl or 0
             data._sortName = name or ""
@@ -471,8 +486,8 @@ local function RefreshGearVisualOrder()
     refreshingOrder = true
 
     local items = {}
-    for bag = 0, 5 do
-        local numSlots = C_Container.GetContainerNumSlots(bag) or 0
+    for bag = 0, (IsForever() and 4 or 5) do
+        local numSlots = not IsSpecialBag(bag) and C_Container.GetContainerNumSlots(bag) or 0
         for slot = 1, numSlots do
             local info = C_Container.GetContainerItemInfo(bag, slot)
             if info then
@@ -799,6 +814,10 @@ local function SetReagentMoveLocked(locked)
 end
 
 local function MoveReagentsToReagentBag(printResult)
+    if IsForever() then
+        if printResult ~= false then Print("|cff6fe7c5BagPlus|r Reagent-bag moves are not supported on WoW Forever.") end
+        return false
+    end
     if reagentMoveLocked then return false end
     if InCombatLockdown and InCombatLockdown() then
         if printResult ~= false then Print("|cff6fe7c5BagPlus|r Cannot move reagents while in combat.") end
@@ -1480,6 +1499,7 @@ local function QueueBankCategoryTransfer(bank, bankType, srcBag, srcSlot)
 end
 
 local function PatchBankCategoryRouting()
+    if IsForever() then return true end -- retain EllesmereUI native bank routing
     if bankCategoryRoutingPatched then return true end
     local bank = _G.EUI_BankFrame
     if not (bank and bank.QueueTransfer and bank.GetSelectedTabBagID) then return false end
@@ -2379,6 +2399,14 @@ local function PatchManager()
 
         local cats = self:GetCategories()
         local originalCat = idx and cats[idx]
+        -- ClassifyItem can also be called outside ClassifyAll's special-bag
+        -- context. Never pull an item out of its physical specialty bag.
+        if IsSpecialBag(bag) then
+            for i, cat in ipairs(cats) do
+                if cat.isSpecialBag then return i end
+            end
+            return idx
+        end
         local assignments = itemID and EllesmereUIDB and EllesmereUIDB.bagItemAssignments
         if assignments and assignments[itemID] then return idx end
         if originalCat and originalCat.bindRule and not IsRuleEnabled(originalCat.bindRule) then
@@ -2410,6 +2438,10 @@ local function PatchRefresh()
     EUI_Bags.RefreshInventory = function(self, ...)
         RefreshGearVisualOrder()
         local result = originalRefresh(self, ...)
+        -- List and native Compact use their own geometry and resize rules.
+        if (self.IsListMode and self.IsListMode()) or (self.IsCompactMode and self.IsCompactMode()) then
+            return result
+        end
         local compactApplied = false
         if CompactCategoryRowsEnabled() and SelectedAllItemsView() then
             pcall(ApplyCompactCategoryRows)
@@ -2471,6 +2503,7 @@ local function StyleReagentButtonIcon(btn)
 end
 
 local function PatchReagentButton()
+    if IsForever() then reagentButtonPatched = true; return true end
     if not (_G.EUI_Bags and EUI_Bags.Header and CreateFrame) then return reagentButtonPatched end
 
     local btn = EUI_Bags._bagPlusReagentBtn
@@ -2627,6 +2660,7 @@ local function ClickBankWarbankSortButton()
 end
 
 local function PatchBankWarbankSortButton()
+    if IsForever() then return true end
     if bankWarbankSortButtonPatched then
         PositionBankWarbankSortButton()
         return true
@@ -2731,7 +2765,7 @@ local function RegisterOptions()
 
     local config = {
         title = TITLE,
-        description = "Adds Warbound Gear and BoE Gear categories to EllesmereUI Bags, sorts gear by item level, can compact or cap bag rows, and can move reagents into the reagent bag.",
+        description = IsForever() and "Adds a BoE Gear category and item-level sorting. Grid display supports compact category rows, hiding empty Recent Items, and row limits. Bank transfers use EllesmereUI routing." or "Adds Warbound Gear and BoE Gear categories to EllesmereUI Bags, sorts gear by item level, can compact or cap bag rows, and can move reagents into the reagent bag.",
         searchTerms = "bagplus bags boe warbound wue gear item level sort compact condensed category rows recent empty maximum items per row onebag multibag reagent reagents mats",
         pages = { PAGE },
         _euiCore = false,
@@ -2743,15 +2777,17 @@ local function RegisterOptions()
             local _, h
 
             _, h = W:SectionHeader(parent, "BAGPLUS", y); y = y - h
-            _, h = W:Toggle(parent, "Warbound Gear Category", y,
-                function() return DB().wueEnabled ~= false end,
-                function(v)
-                    DB().wueEnabled = v and true or false
-                    DB().enabled = AnyRuleEnabled()
-                    RebuildBagPlus()
-                end,
-                "Adds a Warbound Gear category for unbound Warbound-until-Equipped armor and weapons."
-            ); y = y - h
+            if not IsForever() then
+                _, h = W:Toggle(parent, "Warbound Gear Category", y,
+                    function() return DB().wueEnabled ~= false end,
+                    function(v)
+                        DB().wueEnabled = v and true or false
+                        DB().enabled = AnyRuleEnabled()
+                        RebuildBagPlus()
+                    end,
+                    "Adds a Warbound Gear category for unbound Warbound-until-Equipped armor and weapons."
+                ); y = y - h
+            end
 
             _, h = W:Toggle(parent, "BoE Gear Category", y,
                 function() return DB().boeEnabled ~= false end,
@@ -2889,7 +2925,7 @@ SlashCmdList.BAGPLUSFORELLESMEREUI = function(msg)
     local function PrintStatus()
         local db = DB()
         Print("|cff6fe7c5BagPlus|r boe " .. OnOff(db.boeEnabled ~= false)
-            .. ", wue " .. OnOff(db.wueEnabled ~= false)
+            .. ", wue " .. OnOff(IsRuleEnabled(RULE_WUE))
             .. ", ilvl " .. SortMode()
             .. ", compact " .. OnOff(CompactCategoryRowsEnabled())
             .. ", hide empty recent " .. OnOff(HideEmptyRecentItemsEnabled())
@@ -2897,15 +2933,20 @@ SlashCmdList.BAGPLUSFORELLESMEREUI = function(msg)
     end
     local function PrintHelp()
         Print("|cff6fe7c5BagPlus|r /bagplus boe on|off")
-        Print("|cff6fe7c5BagPlus|r /bagplus wue on|off")
+        if not IsForever() then Print("|cff6fe7c5BagPlus|r /bagplus wue on|off") end
         Print("|cff6fe7c5BagPlus|r /bagplus ilvl asc|desc|off")
         Print("|cff6fe7c5BagPlus|r /bagplus compact on|off")
         Print("|cff6fe7c5BagPlus|r /bagplus emptyrecent on|off")
         Print("|cff6fe7c5BagPlus|r /bagplus perrow on|off")
         Print("|cff6fe7c5BagPlus|r /bagplus perrow "
             .. MAX_ITEMS_PER_ROW_MIN .. "-" .. MAX_ITEMS_PER_ROW_MAX)
-        Print("|cff6fe7c5BagPlus|r /bagplus reagents")
+        if not IsForever() then Print("|cff6fe7c5BagPlus|r /bagplus reagents") end
         Print("|cff6fe7c5BagPlus|r /bagplus refresh")
+    end
+
+    if cmd == "wue" and IsForever() then
+        Print("|cff6fe7c5BagPlus|r Warbound Gear is not supported on WoW Forever.")
+        return
     end
 
     if cmd == "boe" or cmd == "wue" then

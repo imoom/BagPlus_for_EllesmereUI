@@ -2,6 +2,14 @@
 
 All notable changes to BagPlus for EllesmereUI will be documented in this file.
 
+## 26.12 - 2026-10-17
+
+- Added experimental WoW Forever (interface 16001) support for BoE categories, item-level sorting, and Grid layout options.
+- Preserved specialty-bag categories and native sorting; excluded specialty bags and bag 5 from Forever's inventory visual-order scan.
+- Disabled Warbound controls, reagent-bag moves, and BagPlus bank routing/warbank cleanup overrides on Forever, retaining EllesmereUI's native bank behavior.
+- Kept native List and Compact display geometry and respected EllesmereUI's blocked-client flag.
+- Added a local installer with separate retail and Forever destinations and documented in-game testing.
+
 ## 26.11 - 2026-10-14
 
 - Fixed BoE and Warbound Gear categorization and gear sort modes on clients exposing item queries through `C_Item` instead of the legacy global functions.

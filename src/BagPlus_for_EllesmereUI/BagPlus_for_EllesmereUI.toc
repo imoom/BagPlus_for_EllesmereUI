@@ -1,9 +1,9 @@
-## Interface: 120000, 120001, 120005, 120007, 120100, 120105
+## Interface: 120000, 120001, 120005, 120007, 120100, 120105, 16001
 ## Title: BagPlus for EllesmereUI
 ## Category: Inventory
 ## Notes: Extra EllesmereUI bag categories, item-level gear sorting, reagent-bag moves, bank category routing, and warbank cleanup helpers.
 ## Author: Shamongus
-## Version: 26.11
+## Version: 26.12
 ## X-License: MIT
 ## Dependencies: EllesmereUI, EllesmereUIBags
 ## SavedVariables: BagPlusForEllesmereUIDB
