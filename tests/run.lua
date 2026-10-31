@@ -329,6 +329,14 @@ local function resetGlobals()
     _G.C_Timer = {
         After = function(_, fn) if fn then fn() end end,
     }
+    _G.hooksecurefunc = function(object, method, hook)
+        local original = object[method]
+        object[method] = function(...)
+            local result = original(...)
+            hook(...)
+            return result
+        end
+    end
     _G.UIParent = newFrame("Frame")
     UIParent:SetSize(1920, 1080)
 
@@ -669,15 +677,19 @@ end
 
 local function buildSimpleGrid(ctx)
     local child = ctx.bags._scrollChild
+    local ns = EllesmereUI._ModuleNS and EllesmereUI._ModuleNS.EllesmereUIBags
+    local size, gap = ns and ns.SLOT_SIZE or 34, ns and ns.SPACING or 4
+    local pitch = size + gap
     clearChildren(child)
-    child:SetSize(488, 320)
+    child:SetSize(12 * pitch + 32, 320)
     ctx.bags:SetWidth(600)
-    makeCategoryHeader(child, "Main Bags", 15, -6, 456)
+    makeCategoryHeader(child, "Main Bags", 15, -6, 12 * pitch)
     ctx.simpleSlots = {}
     for index = 1, 12 do
         local col = (index - 1) % 12
         local row = math.floor((index - 1) / 12)
-        ctx.simpleSlots[index] = makeSlot(child, 15 + col * 38, -28 - row * 38)
+        ctx.simpleSlots[index] = makeSlot(child, 15 + col * pitch, -28 - row * pitch)
+        ctx.simpleSlots[index]:SetSize(size, size)
     end
 end
 
@@ -1431,6 +1443,56 @@ local upstreamCategories = "EllesmereUI/EllesmereUIBags/EllesmereUIBags_Categori
 local upstreamFile = io.open(upstreamCategories, "r")
 if upstreamFile then
     upstreamFile:close()
+    test("retail works with EUI 9.7 live and offline classification", function()
+        local ctx = setup()
+        EllesmereUI.Lite = { IsDBReady = function() return true end }
+        _G.wipe = function(t) for k in pairs(t) do t[k] = nil end; return t end
+        _G.C_EquipmentSet = { GetEquipmentSetIDs = function() return {} end }
+        installInventory({ [0] = { size = 4,
+            [1] = bagItem(1), [2] = bagItem(2), [3] = bagItem(3), [4] = bagItem(4),
+        } }, {
+            ["item:1"] = { name = "BoE", classID = Enum.ItemClass.Armor, bindType = Enum.ItemBind.OnEquip },
+            ["item:2"] = { name = "Warbound", classID = Enum.ItemClass.Armor, bindType = Enum.ItemBind.OnEquip },
+            ["item:3"] = { name = "Bound BoE", classID = Enum.ItemClass.Armor, bindType = Enum.ItemBind.OnEquip },
+            ["item:4"] = { name = "Assigned", classID = Enum.ItemClass.Armor, bindType = Enum.ItemBind.OnEquip },
+        })
+        C_Item.GetItemInfoInstant = GetItemInfoInstant
+        C_Item.IsBoundToAccountUntilEquip = function(loc) return loc.slot == 2 end
+        local originalInfo = C_Container.GetContainerItemInfo
+        C_Container.GetContainerItemInfo = function(bag, slot)
+            local info = originalInfo(bag, slot)
+            if info then info.isBound = slot == 3 end
+            return info
+        end
+        EUI_CategoryManager = nil
+        assert(loadfile(upstreamCategories))("EllesmereUIBags", { SpecialBags = function() end })
+        ctx.manager = EUI_CategoryManager
+        EllesmereUIDB.bagItemAssignments = { [4] = "Consumables" }
+        loadAddon(ctx)
+        local items = {}
+        for slot = 1, 4 do
+            items[slot] = { bag = 0, slot = slot, itemLink = "item:" .. slot,
+                info = C_Container.GetContainerItemInfo(0, slot) }
+        end
+        local counts, total = ctx.manager:ClassifyAll(items)
+        local boe = findCategory(ctx.manager, "BoE Gear")
+        local wue = findCategory(ctx.manager, "Warbound Gear")
+        local armor = findCategory(ctx.manager, "Armor")
+        assertEqual(total, 4)
+        assertEqual(items[1].categoryIndex, boe)
+        assertEqual(items[2].categoryIndex, wue)
+        assertEqual(items[3].categoryIndex, armor)
+        assertEqual(items[4].categoryIndex, findCategory(ctx.manager, "Consumables"))
+        assertEqual(counts[boe], 1)
+        assertEqual(counts[wue], 1)
+        -- OfflineView calls ClassifyItem with no live bag/slot or bound state.
+        for id = 1, 3 do
+            assertEqual(ctx.manager:ClassifyItem("item:" .. id, id, nil, nil, 1), armor)
+        end
+        ctx.profile.bagDisabledCategories = { ["BoE Gear"] = true }
+        ctx.manager:ClassifyAll(items)
+        assertEqual(items[1].categoryIndex, findCategory(ctx.manager, "Miscellaneous"))
+    end)
     test("Forever works with the checked-out EllesmereUI category implementation", function()
         local ctx = setup({ forever = true })
         EUI_CLIENT_FOREVER = true
@@ -1464,6 +1526,82 @@ if upstreamFile then
         assertNil(findCategory(ctx.manager, "Warbound Gear"))
     end)
 end
+
+test("EUI header refresh keeps reagent, quick actions and junk icons in order", function()
+    local ctx = setup()
+    local bags = ctx.bags
+    bags._quickBtn = newFrame("Button", bags.Header)
+    bags._junkBtn = newFrame("Button", bags.Header)
+    function bags:SyncHeaderIcons()
+        local prev = self._sortBtn:IsShown() and self._sortBtn or self._searchBox
+        self._bagsBtn:SetPoint("RIGHT", prev, "LEFT", -6, 0)
+        if self._bagsBtn:IsShown() then prev = self._bagsBtn end
+        self._quickBtn:SetPoint("RIGHT", prev, "LEFT", -6, 0)
+        self._junkBtn:SetPoint("RIGHT", self._quickBtn, "LEFT", -6, 0)
+    end
+    bags:SyncHeaderIcons()
+    loadAddon(ctx)
+    for _, shown in ipairs({ true, false }) do
+        bags._bagsBtn:SetShown(shown)
+        bags._sortBtn:SetShown(shown)
+        bags:SyncHeaderIcons()
+        local _, reagentAnchor = bags._bagPlusReagentBtn:GetPoint()
+        local _, quickAnchor = bags._quickBtn:GetPoint()
+        local _, junkAnchor = bags._junkBtn:GetPoint()
+        assertEqual(reagentAnchor, shown and bags._sortBtn or bags._searchBox)
+        assertEqual(quickAnchor, shown and bags._bagsBtn or bags._bagPlusReagentBtn)
+        assertEqual(junkAnchor, bags._quickBtn)
+    end
+end)
+
+test("row limits and compact rows follow EUI applied slot metrics as they change", function()
+    local ctx
+    ctx = setup({ refreshInventory = function() buildSimpleGrid(ctx) end })
+    local ns = { SLOT_SIZE = 34, SPACING = 4 }
+    EllesmereUI._ModuleNS = { EllesmereUIBags = ns }
+    ctx.bags._sidebarChild = newFrame("Frame", ctx.bags)
+    local allItems = newFrame("Button", ctx.bags._sidebarChild)
+    allItems._catIdx = 0
+    allItems._indicator = newRegion()
+    loadAddon(ctx)
+    slash("perrow 5")
+    for _, compact in ipairs({ false, true }) do
+        slash(compact and "compact on" or "compact off")
+        for _, metrics in ipairs({ {24, 0}, {48, 10}, {56, 12}, {34, 4} }) do
+            ns.SLOT_SIZE, ns.SPACING = metrics[1], metrics[2]
+            -- A profile can differ while EUI defers applying it in combat.
+            ctx.profile.bagSlotSize, ctx.profile.bagSlotSpacing = 30, 2
+            ctx.bags:RefreshInventory()
+            local pitch = metrics[1] + metrics[2]
+            local x5, y5 = pointXY(ctx.simpleSlots[5])
+            local x6, y6 = pointXY(ctx.simpleSlots[6])
+            assertEqual(x5, 15 + 4 * pitch)
+            assertEqual(y5, -28)
+            assertEqual(x6, 15)
+            assertEqual(y6, -28 - pitch)
+            assertEqual(ctx.simpleSlots[6]:GetWidth(), metrics[1])
+            assertEqual(ctx.bags._scrollChild:GetWidth(), 5 * pitch + 32)
+        end
+    end
+end)
+
+test("offline panels retain native layout with every BagPlus layout option on", function()
+    local ctx
+    ctx = setup({ refreshInventory = function() buildEmptyRecentGrid(ctx) end })
+    EllesmereUI._ModuleNS = { EllesmereUIBags = { OfflineUp = function() return true end } }
+    ctx.bags._sidebarChild = newFrame("Frame", ctx.bags)
+    local allItems = newFrame("Button", ctx.bags._sidebarChild)
+    allItems._catIdx = 0
+    allItems._indicator = newRegion()
+    loadAddon(ctx)
+    slash("perrow 5")
+    slash("compact on")
+    assertTrue(ctx.recentHeader:IsShown())
+    assertTrue(ctx.recentPads[1]:IsShown())
+    assertEqual(ctx.bags._scrollChild:GetWidth(), 488)
+    local _, y = pointXY(ctx.afterRecentHeader)
+    assertEqual(y, -66)
+end)
 
 local passed = 0
 for _, entry in ipairs(tests) do

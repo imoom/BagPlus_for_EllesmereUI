@@ -193,6 +193,8 @@ local function GetBindRule(itemLink, itemInfo, bag, slot)
     -- EllesmereUI 9.4 passes item quality as ClassifyItem's fifth argument.
     -- Older BagPlus callers/tests may still provide the container info table.
     local info = type(itemInfo) == "table" and itemInfo or nil
+    -- Offline snapshots have no slot-bound state; keep native classification.
+    if not info and (bag == nil or slot == nil) then return nil end
     if not info and bag and slot and C_Container and C_Container.GetContainerItemInfo then
         info = C_Container.GetContainerItemInfo(bag, slot)
     end
@@ -1546,6 +1548,18 @@ local BAG_HEADER_H = 35
 local BAG_FOOTER_H = 28
 local BAG_POST_LAYOUT_AUTOSIZE_MIN_H = 260
 
+local function BagsNamespace()
+    return EllesmereUI and EllesmereUI._ModuleNS and EllesmereUI._ModuleNS.EllesmereUIBags
+end
+
+local function SyncBagSlotMetrics()
+    local ns = BagsNamespace()
+    -- Read applied metrics: EUI can defer a profile change during combat.
+    BAG_SLOT_SIZE = (ns and ns.SLOT_SIZE) or 34
+    BAG_SLOT_SPACING = (ns and ns.SPACING) or 4
+    BAG_COMPACT_BUCKET_GAP = math.max(8, BAG_SLOT_SPACING * 3)
+end
+
 local function SelectedAllItemsView()
     local sidebar = _G.EUI_Bags and (EUI_Bags._sidebarChild or EUI_Bags._sidebar)
     if not sidebar or not sidebar.GetChildren then return false end
@@ -2438,6 +2452,9 @@ local function PatchRefresh()
     EUI_Bags.RefreshInventory = function(self, ...)
         RefreshGearVisualOrder()
         local result = originalRefresh(self, ...)
+        local ns = BagsNamespace()
+        if ns and ns.OfflineUp and ns.OfflineUp() then return result end
+        SyncBagSlotMetrics()
         -- List and native Compact use their own geometry and resize rules.
         if (self.IsListMode and self.IsListMode()) or (self.IsCompactMode and self.IsCompactMode()) then
             return result
@@ -2478,10 +2495,16 @@ local function PositionReagentButton()
         btn:SetPoint("RIGHT", header, "RIGHT", -210, 0)
     end
 
-    local bagsBtn = bags._bagsBtn
-    if bagsBtn and bagsBtn ~= btn and bagsBtn.ClearAllPoints and bagsBtn.SetPoint then
-        bagsBtn:ClearAllPoints()
-        bagsBtn:SetPoint("RIGHT", btn, "LEFT", -6, 0)
+    -- Insert into the native icon chain, including when Show Bags is hidden.
+    local anchor = sortBtn and (not sortBtn.IsShown or sortBtn:IsShown()) and sortBtn or searchBox
+    for _, child in ipairs({ header:GetChildren() }) do
+        if child ~= btn and child ~= sortBtn and child.GetPoint then
+            local point, relativeTo, relativePoint = child:GetPoint(1)
+            if point == "RIGHT" and relativeTo == anchor and relativePoint == "LEFT" then
+                child:ClearAllPoints()
+                child:SetPoint("RIGHT", btn, "LEFT", -6, 0)
+            end
+        end
     end
 end
 
@@ -2540,6 +2563,9 @@ local function PatchReagentButton()
     end
 
     PositionReagentButton()
+    if not reagentButtonPatched and EUI_Bags.SyncHeaderIcons then
+        hooksecurefunc(EUI_Bags, "SyncHeaderIcons", PositionReagentButton)
+    end
     reagentButtonPatched = true
     return true
 end

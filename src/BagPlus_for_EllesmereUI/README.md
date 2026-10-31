@@ -14,6 +14,18 @@ Keep these addons enabled:
 
 BagPlus does not replace EllesmereUI Bags. It extends the existing bag category system at runtime.
 
+## EllesmereUI 9.7 compatibility
+
+Reviewed against 9.7.2. Grid layout options follow EllesmereUI's applied Slot Size
+and Slot Spacing settings. Native List, Compact, and offline panels retain their
+own layouts. Saved alt items keep native classification because offline snapshots
+do not include the bound state needed for BoE and Warbound detection.
+
+EllesmereUI already offers track-first gear sorting and a native Compact display.
+Set `/bagplus ilvl off` to use its gear ordering. BagPlus Compact Category Rows
+is a separate option for the Grid display. The extra Blizzard warbank cleanup
+button duplicates EUI's native sort while a warbank view is selected.
+
 ## WoW Forever (experimental)
 
 Version 26.12 adds Forever interface 16001 support using EllesmereUI's client

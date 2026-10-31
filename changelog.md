@@ -2,6 +2,14 @@
 
 All notable changes to BagPlus for EllesmereUI will be documented in this file.
 
+## 26.13 - 2026-10-31
+
+- Updated compatibility with EllesmereUI 9.7 through 9.7.2.
+- Fixed Grid layout options to follow EUI's applied slot size and spacing, including changes while the bags are open.
+- Preserved native offline panel layouts and classification when saved items lack live bound-state information.
+- Kept the reagent button in EUI's header icon chain after native header refreshes, including with Sort or Show Bags hidden.
+- Added retail upstream-classifier and layout/header regression coverage; documented feature overlap and remaining in-game checks.
+
 ## 26.12 - 2026-10-17
 
 - Added experimental WoW Forever (interface 16001) support for BoE categories, item-level sorting, and Grid layout options.
