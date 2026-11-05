@@ -2,6 +2,12 @@
 
 All notable changes to BagPlus for EllesmereUI will be documented in this file.
 
+## 26.14 - 2026-11-05
+
+- BoE Gear now appears as a separate category by default on retail and Forever instead of being merged visually into The Armory.
+- Preserved saved category grouping choices. Existing users can expand The Armory in the bag sidebar, right-click BoE Gear, and choose Ungroup BoE Gear to show it separately.
+- Documented the grouping behavior and the workaround for existing profiles.
+
 ## 26.13 - 2026-10-31
 
 - Updated compatibility with EllesmereUI 9.7 through 9.7.2.

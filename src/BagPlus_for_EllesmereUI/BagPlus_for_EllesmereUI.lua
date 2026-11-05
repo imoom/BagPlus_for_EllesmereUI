@@ -239,7 +239,9 @@ local function NewManagedCategory(def, seenInOrder)
         groupNameCustom = state and state.groupNameCustom,
         _bagPlusManaged = true,
     }
-    if not state and not seenInOrder then
+    -- BoE must remain visibly separate; EUI merges grouped categories into
+    -- one section. Retain explicit saved grouping and the retail WuE default.
+    if def.rule ~= RULE_BOE and not state and not seenInOrder then
         cat.groupName = "The Armory"
         cat.groupNameCustom = true
     end

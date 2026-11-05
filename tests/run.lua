@@ -1338,6 +1338,47 @@ test("hide empty recent items recognizes EllesmereUI 9.4 counted headers", funct
 end)
 
 
+for _, forever in ipairs({ false, true }) do
+    local client = forever and "Forever" or "retail"
+    test(client .. " leaves BoE separate by default across category rebuilds", function()
+        local ctx = setup({ forever = forever })
+        loadAddon(ctx)
+        for _ = 1, 2 do
+            local _, boe = findCategory(ctx.manager, "BoE Gear")
+            assertNil(boe.groupName, "BoE should render as its own section")
+            assertNil(boe.groupNameCustom)
+            local _, wue = findCategory(ctx.manager, "Warbound Gear")
+            if forever then
+                assertNil(wue)
+            else
+                assertEqual(wue.groupName, "The Armory", "retail Warbound default should remain intact")
+            end
+            ctx.manager:InitCategories()
+        end
+    end)
+
+    test(client .. " preserves saved BoE grouping and ungrouping choices", function()
+        local ctx = setup({ forever = forever })
+        ctx.profile.bagCategoryOrder = { "BoE Gear", "Armor" }
+        ctx.profile.bagCategoryState["BoE Gear"] = {
+            groupName = "The Armory", groupNameCustom = true, rename = "Tradeable Gear",
+        }
+        loadAddon(ctx)
+        local _, boe = findCategory(ctx.manager, "BoE Gear")
+        assertEqual(boe.groupName, "The Armory")
+        assertEqual(boe.groupNameCustom, true)
+        assertEqual(boe.name, "Tradeable Gear")
+        ctx.profile.bagCategoryState["BoE Gear"].groupName = "My Gear"
+        ctx.manager:InitCategories()
+        _, boe = findCategory(ctx.manager, "BoE Gear")
+        assertEqual(boe.groupName, "My Gear")
+        ctx.profile.bagCategoryState["BoE Gear"] = { groupName = false }
+        ctx.manager:InitCategories()
+        _, boe = findCategory(ctx.manager, "BoE Gear")
+        assertTrue(not boe.groupName, "explicit ungrouping should persist")
+    end)
+end
+
 test("Forever offers BoE without retail-only controls or transfers", function()
     local ctx = setup({ forever = true })
     local originalTransfer = ctx.bank.QueueTransfer

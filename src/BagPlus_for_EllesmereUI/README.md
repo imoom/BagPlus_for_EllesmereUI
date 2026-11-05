@@ -69,11 +69,24 @@ EllesmereUI classifier when available; it still needs in-game validation.
 ## Defaults
 
 - BoE Gear category: on
+- BoE Gear grouping: separate section (saved grouping choices are preserved)
 - Warbound Gear category: on (retail only)
 - Item-level sorting: descending
 - Compact category rows: off
 - Hide empty Recent Items: on
 - Change maximum items per row: off
 - Maximum items per row: 12
+
+### BoE Gear appears inside The Armory
+
+EllesmereUI merges grouped categories into one visible section, so BoE and
+soulbound gear can appear together even when BoE classification is working.
+Starting with 26.14, BagPlus leaves BoE Gear separate by default on retail and
+Forever. Existing saved grouping choices are preserved.
+
+For an existing profile, expand The Armory in the bag sidebar, right-click
+BoE Gear, and choose **Ungroup BoE Gear**. This saves the separation across
+reloads and restarts. You can also use EllesmereUI's grouping controls to group
+it again if desired.
 
 The reagent-bag button in the inventory header, and `/bagplus reagents`, move crafting reagents from the main bags into the reagent bag without running a full bag sort.
